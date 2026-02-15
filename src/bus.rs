@@ -5334,12 +5334,13 @@ impl IoPort {
 
     fn read_joypad_data(&self) -> u8 {
         // PC Engine joypad reads one nibble at a time.
-        // SEL=0 -> button nibble, SEL=1 -> d-pad nibble.
+        // SEL=1 -> d-pad nibble (lower 4 bits of input)
+        // SEL=0 -> button nibble (upper 4 bits of input)
         let sel = (self.output & 0x01) != 0;
         let nibble = if sel {
-            (self.input >> 4) & 0x0F
+            self.input & 0x0F // d-pad: Up(0) Right(1) Down(2) Left(3)
         } else {
-            self.input & 0x0F
+            (self.input >> 4) & 0x0F // buttons: I(0) II(1) Sel(2) Run(3)
         };
         0xF0 | nibble
     }
@@ -5495,13 +5496,13 @@ mod tests {
         bus.set_mpr(0, 0xFF);
         bus.set_joypad_input(0x5A);
 
-        // SEL=1 -> upper nibble
+        // SEL=1 -> d-pad (lower nibble of input)
         bus.write(JOYPAD_BASE_ADDR, 0x01);
-        assert_eq!(bus.read(JOYPAD_BASE_ADDR) & 0x0F, 0x05);
-
-        // SEL=0 -> lower nibble
-        bus.write(JOYPAD_BASE_ADDR, 0x00);
         assert_eq!(bus.read(JOYPAD_BASE_ADDR) & 0x0F, 0x0A);
+
+        // SEL=0 -> buttons (upper nibble of input)
+        bus.write(JOYPAD_BASE_ADDR, 0x00);
+        assert_eq!(bus.read(JOYPAD_BASE_ADDR) & 0x0F, 0x05);
     }
 
     #[test]

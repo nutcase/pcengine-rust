@@ -203,31 +203,17 @@ fn update_texture(texture: &mut sdl2::render::Texture, frame: &[u32]) -> Result<
 
 fn build_pad_state(pressed: &HashSet<Keycode>) -> u8 {
     let mut state: u8 = 0xFF;
-    // Active low buttons.
+    // Active-low bits. Lower nibble = d-pad, upper nibble = buttons.
     let mut clear = |bit: u8| state &= !(1 << bit);
-    if pressed.contains(&Keycode::Right) {
-        clear(0);
-    }
-    if pressed.contains(&Keycode::Left) {
-        clear(1);
-    }
-    if pressed.contains(&Keycode::Down) {
-        clear(2);
-    }
-    if pressed.contains(&Keycode::Up) {
-        clear(3);
-    }
-    if pressed.contains(&Keycode::Z) {
-        clear(4); // Button I
-    }
-    if pressed.contains(&Keycode::X) {
-        clear(5); // Button II
-    }
-    if pressed.contains(&Keycode::Return) {
-        clear(6); // Select
-    }
-    if pressed.contains(&Keycode::Space) {
-        clear(7); // Run
-    }
+    // D-pad (lower nibble, returned when SEL=1)
+    if pressed.contains(&Keycode::Up) { clear(0); }
+    if pressed.contains(&Keycode::Right) { clear(1); }
+    if pressed.contains(&Keycode::Down) { clear(2); }
+    if pressed.contains(&Keycode::Left) { clear(3); }
+    // Buttons (upper nibble, returned when SEL=0)
+    if pressed.contains(&Keycode::Z) { clear(4); }       // I
+    if pressed.contains(&Keycode::X) { clear(5); }       // II
+    if pressed.contains(&Keycode::LShift) || pressed.contains(&Keycode::RShift) { clear(6); } // Select
+    if pressed.contains(&Keycode::Return) { clear(7); }  // Run
     state
 }
