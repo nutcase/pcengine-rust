@@ -509,7 +509,9 @@ impl Bus {
 
     #[inline]
     fn env_fold_io_02xx() -> bool {
-        std::env::var("PCE_FOLD_IO_02XX").is_ok()
+        use std::sync::OnceLock;
+        static FLAG: OnceLock<bool> = OnceLock::new();
+        *FLAG.get_or_init(|| std::env::var("PCE_FOLD_IO_02XX").is_ok())
     }
 
     #[inline]
@@ -527,55 +529,66 @@ impl Bus {
 
     #[inline]
     fn env_force_test_palette() -> bool {
-        std::env::var("PCE_FORCE_TEST_PALETTE").is_ok()
+        use std::sync::OnceLock;
+        static FLAG: OnceLock<bool> = OnceLock::new();
+        *FLAG.get_or_init(|| std::env::var("PCE_FORCE_TEST_PALETTE").is_ok())
     }
 
     #[inline]
     fn env_vce_catchall() -> bool {
-        std::env::var("PCE_VCE_CATCHALL").is_ok()
+        use std::sync::OnceLock;
+        static FLAG: OnceLock<bool> = OnceLock::new();
+        *FLAG.get_or_init(|| std::env::var("PCE_VCE_CATCHALL").is_ok())
     }
 
     #[inline]
     #[cfg(feature = "trace_hw_writes")]
     fn env_trace_mpr() -> bool {
-        std::env::var("PCE_TRACE_MPR").is_ok()
+        use std::sync::OnceLock;
+        static FLAG: OnceLock<bool> = OnceLock::new();
+        *FLAG.get_or_init(|| std::env::var("PCE_TRACE_MPR").is_ok())
     }
 
     #[inline]
     fn env_extreme_mirror() -> bool {
-        std::env::var("PCE_VDC_EXTREME_MIRROR").is_ok()
+        use std::sync::OnceLock;
+        static FLAG: OnceLock<bool> = OnceLock::new();
+        *FLAG.get_or_init(|| std::env::var("PCE_VDC_EXTREME_MIRROR").is_ok())
     }
 
     #[inline]
     fn env_vdc_ultra_mirror() -> bool {
-        std::env::var("PCE_VDC_ULTRA_MIRROR").is_ok()
+        use std::sync::OnceLock;
+        static FLAG: OnceLock<bool> = OnceLock::new();
+        *FLAG.get_or_init(|| std::env::var("PCE_VDC_ULTRA_MIRROR").is_ok())
     }
 
     #[inline]
     fn env_vdc_catchall() -> bool {
-        std::env::var("PCE_VDC_CATCHALL").is_ok()
+        use std::sync::OnceLock;
+        static FLAG: OnceLock<bool> = OnceLock::new();
+        *FLAG.get_or_init(|| std::env::var("PCE_VDC_CATCHALL").is_ok())
     }
 
     #[inline]
     fn env_force_title_now() -> bool {
-        // デバッグ/強制表示用: フレーム取得時に実VRAMを無視し、擬似タイトル画面を描く。
-        // PCE_FORCE_TITLE=1 のときのみ有効。
-        matches!(std::env::var("PCE_FORCE_TITLE"), Ok(v) if v == "1")
+        use std::sync::OnceLock;
+        static FLAG: OnceLock<bool> = OnceLock::new();
+        *FLAG.get_or_init(|| matches!(std::env::var("PCE_FORCE_TITLE"), Ok(v) if v == "1"))
     }
 
     #[inline]
     fn env_vdc_force_hot_ports() -> bool {
-        matches!(std::env::var("PCE_VDC_FORCE_HOT"), Ok(v) if v == "1")
+        use std::sync::OnceLock;
+        static FLAG: OnceLock<bool> = OnceLock::new();
+        *FLAG.get_or_init(|| matches!(std::env::var("PCE_VDC_FORCE_HOT"), Ok(v) if v == "1"))
     }
 
     #[inline]
     fn env_force_title_scene() -> bool {
-        // Populate VRAM/BAT/palette and enable display immediately, bypassing
-        // HuCARD init. PCE_FORCE_TITLE_SCENE=1 のときのみ有効。
-        matches!(
-            std::env::var("PCE_FORCE_TITLE_SCENE"),
-            Ok(v) if v == "1"
-        )
+        use std::sync::OnceLock;
+        static FLAG: OnceLock<bool> = OnceLock::new();
+        *FLAG.get_or_init(|| matches!(std::env::var("PCE_FORCE_TITLE_SCENE"), Ok(v) if v == "1"))
     }
 
     #[inline]
@@ -592,19 +605,27 @@ impl Bus {
 
     #[inline]
     fn env_irq_status_default() -> Option<u8> {
-        std::env::var("PCE_IRQ_STATUS_DEFAULT")
-            .ok()
-            .and_then(|s| u8::from_str_radix(&s, 16).ok())
+        use std::sync::OnceLock;
+        static VAL: OnceLock<Option<u8>> = OnceLock::new();
+        *VAL.get_or_init(|| {
+            std::env::var("PCE_IRQ_STATUS_DEFAULT")
+                .ok()
+                .and_then(|s| u8::from_str_radix(&s, 16).ok())
+        })
     }
 
     #[inline]
     fn env_timer_default_start() -> bool {
-        std::env::var("PCE_TIMER_DEFAULT_START").is_ok()
+        use std::sync::OnceLock;
+        static FLAG: OnceLock<bool> = OnceLock::new();
+        *FLAG.get_or_init(|| std::env::var("PCE_TIMER_DEFAULT_START").is_ok())
     }
 
     #[inline]
     fn env_force_palette_every_frame() -> bool {
-        std::env::var("PCE_FORCE_PALETTE").is_ok()
+        use std::sync::OnceLock;
+        static FLAG: OnceLock<bool> = OnceLock::new();
+        *FLAG.get_or_init(|| std::env::var("PCE_FORCE_PALETTE").is_ok())
     }
 
     #[inline]
@@ -782,6 +803,57 @@ impl Bus {
         })
     }
 
+    // --- Cached env flags for hot paths (called every tick) ---
+
+    #[inline]
+    fn env_force_timer() -> bool {
+        use std::sync::OnceLock;
+        static FLAG: OnceLock<bool> = OnceLock::new();
+        *FLAG.get_or_init(|| std::env::var("PCE_FORCE_TIMER").is_ok())
+    }
+
+    #[inline]
+    fn env_force_vdc_dsdv() -> bool {
+        use std::sync::OnceLock;
+        static FLAG: OnceLock<bool> = OnceLock::new();
+        *FLAG.get_or_init(|| std::env::var("PCE_FORCE_VDC_DSDV").is_ok())
+    }
+
+    #[inline]
+    fn env_force_irq1() -> bool {
+        use std::sync::OnceLock;
+        static FLAG: OnceLock<bool> = OnceLock::new();
+        *FLAG.get_or_init(|| std::env::var("PCE_FORCE_IRQ1").is_ok())
+    }
+
+    #[inline]
+    fn env_force_irq2() -> bool {
+        use std::sync::OnceLock;
+        static FLAG: OnceLock<bool> = OnceLock::new();
+        *FLAG.get_or_init(|| std::env::var("PCE_FORCE_IRQ2").is_ok())
+    }
+
+    #[inline]
+    fn env_debug_bg_only() -> bool {
+        use std::sync::OnceLock;
+        static FLAG: OnceLock<bool> = OnceLock::new();
+        *FLAG.get_or_init(|| std::env::var("PCE_DEBUG_BG_ONLY").is_ok())
+    }
+
+    #[inline]
+    fn env_debug_spr_only() -> bool {
+        use std::sync::OnceLock;
+        static FLAG: OnceLock<bool> = OnceLock::new();
+        *FLAG.get_or_init(|| std::env::var("PCE_DEBUG_SPR_ONLY").is_ok())
+    }
+
+    #[inline]
+    fn env_force_cram_from_vram() -> bool {
+        use std::sync::OnceLock;
+        static FLAG: OnceLock<bool> = OnceLock::new();
+        *FLAG.get_or_init(|| std::env::var("PCE_FORCE_CRAM_FROM_VRAM").is_ok())
+    }
+
     pub fn new() -> Self {
         let mut bus = Self {
             ram: vec![0; RAM_SIZE],
@@ -894,10 +966,15 @@ impl Bus {
                 return value;
             }
         }
-        if let Some(index) = Self::mpr_index_for_addr(addr) {
-            return self.mpr[index];
-        }
         let (mapping, offset) = self.resolve(addr);
+        // MPR registers ($FF80-$FFBF) are only accessible when the address
+        // falls within a hardware-mapped bank (MPR value $FF).  When MPR7
+        // maps to ROM, $FF80-$FFBF must read ROM data, not MPR values.
+        if matches!(mapping, BankMapping::Hardware) {
+            if let Some(index) = Self::mpr_index_for_addr(addr) {
+                return self.mpr[index];
+            }
+        }
         match mapping {
             BankMapping::Ram { base } => self.ram[base + offset],
             BankMapping::Rom { base } => self.rom.get(base + offset).copied().unwrap_or(0xFF),
@@ -981,11 +1058,15 @@ impl Bus {
                 return;
             }
         }
-        if let Some(index) = Self::mpr_index_for_addr(addr) {
-            self.set_mpr(index, value);
-            return;
-        }
         let (mapping, offset) = self.resolve(addr);
+        // MPR registers ($FF80-$FFBF) are only writable when the address
+        // falls within a hardware-mapped bank.
+        if matches!(mapping, BankMapping::Hardware) {
+            if let Some(index) = Self::mpr_index_for_addr(addr) {
+                self.set_mpr(index, value);
+                return;
+            }
+        }
         match mapping {
             BankMapping::Ram { base } => {
                 let index = base + offset;
@@ -1425,7 +1506,7 @@ impl Bus {
         };
 
         // Debug: force timer expiry to drive IRQ2 if requested.
-        if std::env::var("PCE_FORCE_TIMER").is_ok() {
+        if Self::env_force_timer() {
             self.timer.counter = 0;
             self.interrupt_request |= IRQ_REQUEST_TIMER;
         }
@@ -1465,6 +1546,51 @@ impl Bus {
 
     pub fn psg_sample(&mut self) -> i16 {
         self.psg.generate_sample()
+    }
+
+    /// Returns per-channel PSG state: (frequency, control, balance, noise_control)
+    pub fn psg_channel_info(&self, ch: usize) -> (u16, u8, u8, u8) {
+        if ch < 6 {
+            let c = &self.psg.channels[ch];
+            (c.frequency, c.control, c.balance, c.noise_control)
+        } else {
+            (0, 0, 0, 0)
+        }
+    }
+
+    /// Returns PSG main balance register.
+    pub fn psg_main_balance(&self) -> u8 {
+        self.psg.main_balance
+    }
+
+    /// Returns a copy of the 32-byte waveform table for the given channel.
+    pub fn psg_waveform(&self, ch: usize) -> [u8; 32] {
+        let mut out = [0u8; 32];
+        if ch < 6 {
+            let base = ch * 32;
+            out.copy_from_slice(&self.psg.waveform_ram[base..base + 32]);
+        }
+        out
+    }
+
+    /// Returns (wave_pos, wave_write_pos, phase, phase_step, dda_sample) for a channel.
+    pub fn psg_channel_detail(&self, ch: usize) -> (u8, u8, u32, u32, u8) {
+        if ch < 6 {
+            let c = &self.psg.channels[ch];
+            (c.wave_pos, c.wave_write_pos, c.phase, c.phase_step, c.dda_sample)
+        } else {
+            (0, 0, 0, 0, 0)
+        }
+    }
+
+    /// Returns timer state: (reload, counter, enabled, prescaler).
+    pub fn timer_info(&self) -> (u8, u8, bool, u32) {
+        (self.timer.reload, self.timer.counter, self.timer.enabled, self.timer.prescaler)
+    }
+
+    /// Returns IRQ disable mask and request register.
+    pub fn irq_state(&self) -> (u8, u8) {
+        (self.interrupt_disable, self.interrupt_request)
     }
 
     pub fn take_audio_samples(&mut self) -> Vec<i16> {
@@ -1868,7 +1994,9 @@ impl Bus {
                 true
             }
             Some(ControlRegister::IrqStatus) => {
-                self.interrupt_request &= !value;
+                // On real HuC6280, writing to $1403 always clears the timer
+                // IRQ regardless of the written value (confirmed by Mednafen).
+                self.interrupt_request &= !IRQ_REQUEST_TIMER;
                 true
             }
             None => false,
@@ -1928,8 +2056,8 @@ impl Bus {
         // The BIOS font restore was overwriting game fonts and is historically
         // inaccurate for HuCard games that predate System Card 3.0.
         self.vdc.clear_frame_trigger();
-        let force_bg_only = std::env::var("PCE_DEBUG_BG_ONLY").is_ok();
-        let force_spr_only = std::env::var("PCE_DEBUG_SPR_ONLY").is_ok();
+        let force_bg_only = Self::env_debug_bg_only();
+        let force_spr_only = Self::env_debug_spr_only();
         let mut background_line_enabled = [false; FRAME_HEIGHT];
         let mut sprite_line_enabled = [false; FRAME_HEIGHT];
         let mut active_window_line = [false; FRAME_HEIGHT];
@@ -2563,17 +2691,18 @@ impl Bus {
             return logical % rom_pages;
         }
         // Largest power-of-2 that fits inside rom_pages.
-        let lower = rom_pages.next_power_of_two() >> 1; // e.g. 32 for 48
-        let upper = rom_pages - lower; // e.g. 16 for 48
+        let lower = rom_pages.next_power_of_two() >> 1; // e.g. 32 for 48, 64 for 96
+        let upper = rom_pages - lower; // e.g. 16 for 48, 32 for 96
 
         // Mask to 7-bit bank number (128 banks = 1 MB address space).
+        // The 128-bank space is always split at the midpoint (bank 64):
+        //   Banks  0-63  → lower portion (mirrored within `lower` pages)
+        //   Banks 64-127 → upper portion (mirrored within `upper` pages)
         let bank = logical & 0x7F;
-        if bank < lower * 2 {
-            // Lower half: mirrors the first `lower` banks.
-            bank & (lower - 1)
+        if bank < 64 {
+            bank % lower.max(1)
         } else {
-            // Upper half: mirrors the remaining `upper` banks.
-            (bank & (upper - 1)) + lower
+            ((bank - 64) % upper.max(1)) + lower
         }
     }
 
@@ -2893,15 +3022,15 @@ impl Bus {
                 self.vdc.raise_status(VDC_STATUS_DS | VDC_STATUS_DV);
             }
         }
-        if std::env::var("PCE_FORCE_VDC_DSDV").is_ok() {
+        if Self::env_force_vdc_dsdv() {
             self.vdc.raise_status(VDC_STATUS_DS | VDC_STATUS_DV);
         }
         // Debug: optionally force IRQ1 every refresh to unblock BIOS waits.
-        if std::env::var("PCE_FORCE_IRQ1").is_ok() {
+        if Self::env_force_irq1() {
             self.interrupt_request |= IRQ_REQUEST_IRQ1;
         }
         // Debug: optionally force IRQ2 (timer/PSG line) as well.
-        if std::env::var("PCE_FORCE_IRQ2").is_ok() {
+        if Self::env_force_irq2() {
             self.interrupt_request |= IRQ_REQUEST_IRQ2;
         }
         if self.vdc.irq_active() {
@@ -3011,7 +3140,7 @@ impl Bus {
         self.vdc.raise_status(VDC_STATUS_DV);
 
         // デバッグ用: VRAM DMA 完了時に VRAM 先頭から CRAM 512 ワードを強制ロード。
-        if std::env::var("PCE_FORCE_CRAM_FROM_VRAM").is_ok() {
+        if Self::env_force_cram_from_vram() {
             for i in 0..0x200 {
                 let word = self.vdc.vram.get(i).copied().unwrap_or(0);
                 if let Some(slot) = self.vce.palette.get_mut(i) {
@@ -3301,6 +3430,13 @@ impl Vdc {
         // 初期化直後は BUSY を確実に落としておく（リセット直後の BIOS 待ちループ対策）
         vdc.status &= !VDC_STATUS_BUSY;
         vdc
+    }
+
+    #[inline]
+    fn env_hold_dsdv() -> bool {
+        use std::sync::OnceLock;
+        static FLAG: OnceLock<bool> = OnceLock::new();
+        *FLAG.get_or_init(|| std::env::var("PCE_HOLD_DSDV").is_ok())
     }
 
     fn reset(&mut self) {
@@ -3803,10 +3939,7 @@ impl Vdc {
             self.write_phase
         );
         let index = self.selected_register() as usize;
-        if matches!(
-            index,
-            0x02 | 0x0A | 0x0B | 0x0C | 0x0F | 0x12 | 0x13 | 0x14
-        ) {
+        if matches!(index, 0x02 | 0x0A | 0x0B | 0x0C | 0x0F | 0x12 | 0x13 | 0x14) {
             // HuC6270: these registers only commit on the high-byte write
             // (ST2).  BXR/BYR are NOT included — MAME's COMBINE_DATA merges
             // each byte into the register immediately.
@@ -3890,7 +4023,7 @@ impl Vdc {
         );
         self.commit_register_write(index, combined);
         self.write_phase = VdcWritePhase::Low;
-        if std::env::var("PCE_HOLD_DSDV").is_ok() {
+        if Self::env_hold_dsdv() {
             self.status |= VDC_STATUS_DS | VDC_STATUS_DV;
         }
     }
@@ -4042,7 +4175,7 @@ impl Vdc {
         self.dma_control = masked;
         self.registers[0x0F] = masked;
         // Writing DMA control normally acknowledges both DMA-complete flags.
-        if std::env::var("PCE_HOLD_DSDV").is_err() {
+        if !Self::env_hold_dsdv() {
             self.status &= !(VDC_STATUS_DS | VDC_STATUS_DV);
         }
         if masked & DMA_CTRL_SATB_AUTO == 0 {
@@ -4429,12 +4562,56 @@ const PSG_NOISE_ENABLE: u8 = 0x80;
 const PSG_NOISE_FREQ_MASK: u8 = 0x1F;
 const PSG_PHASE_FRAC_BITS: u32 = 12;
 const PSG_PHASE_FRAC_MASK: u32 = (1 << PSG_PHASE_FRAC_BITS) - 1;
-const PSG_OUTPUT_GAIN: i32 = 256;
-const PSG_LEVEL_NORMALIZER: i32 = 31 * 15 * 15;
+const PSG_PERIOD_ENTRIES: usize = 0x1000;
+// Output gain: Mednafen uses base * 8/6 ≈ 1.33x per channel.
+// With 6 channels at max (15 * 65536 each), max mix = 5,898,240.
+// Gain 340: (5,898,240 * 340) >> 16 = 30,600 (within i16 range).
+const PSG_OUTPUT_GAIN: i32 = 340;
+
+/// Logarithmic volume table (Mednafen-compatible).
+/// Index = attenuation level (0 = full volume, 31 = silence).
+/// Each step ≈ 1.5 dB: multiplier = 1.0 / pow(2, 0.25 * level).
+/// Values are fixed-point with 16 fractional bits.
+fn psg_db_table() -> &'static [i32; 32] {
+    static TABLE: std::sync::OnceLock<[i32; 32]> = std::sync::OnceLock::new();
+    TABLE.get_or_init(|| {
+        let mut table = [0i32; 32];
+        for vl in 0..32 {
+            if vl == 31 {
+                table[vl] = 0; // muted
+            } else if vl == 0 {
+                table[vl] = 65536; // 1.0 in fixed-point
+            } else {
+                let multiplier = 1.0 / f64::powf(2.0, 0.25 * vl as f64);
+                table[vl] = (multiplier * 65536.0) as i32;
+            }
+        }
+        table
+    })
+}
+
+/// Maps 4-bit balance register values (0-15) to 5-bit volume range (0-31).
+/// 0 = muted (maps to 0), 15 = full volume (maps to 31).
+fn psg_balance_scale_tab() -> &'static [u8; 16] {
+    static TABLE: std::sync::OnceLock<[u8; 16]> = std::sync::OnceLock::new();
+    TABLE.get_or_init(|| {
+        let mut table = [0u8; 16];
+        for n in 0..16u8 {
+            if n == 0 {
+                table[n as usize] = 0;
+            } else {
+                // Scale 1-15 to 3-31 (matching Mednafen: n*2 + 1 for non-zero)
+                table[n as usize] = (n * 2 + 1).min(31);
+            }
+        }
+        table
+    })
+}
 
 #[derive(Clone, Copy)]
 struct PsgChannel {
     frequency: u16,
+    phase_step: u32,
     control: u8,
     balance: u8,
     noise_control: u8,
@@ -4442,7 +4619,7 @@ struct PsgChannel {
     wave_pos: u8,
     wave_write_pos: u8,
     dda_sample: u8,
-    noise_lfsr: u16,
+    noise_lfsr: u32, // 18-bit LFSR (HuC6280 reference)
     noise_phase: u32,
 }
 
@@ -4450,6 +4627,7 @@ impl Default for PsgChannel {
     fn default() -> Self {
         Self {
             frequency: 0,
+            phase_step: 1,
             control: 0,
             balance: 0xFF,
             noise_control: 0,
@@ -4457,7 +4635,7 @@ impl Default for PsgChannel {
             wave_pos: 0,
             wave_write_pos: 0,
             dda_sample: 0x10,
-            noise_lfsr: 0x4000,
+            noise_lfsr: 1, // 18-bit LFSR initial value (Mednafen reference)
             noise_phase: 0,
         }
     }
@@ -4475,6 +4653,8 @@ struct Psg {
     irq_pending: bool,
     channels: [PsgChannel; PSG_CHANNEL_COUNT],
     waveform_ram: [u8; PSG_CHANNEL_COUNT * PSG_WAVE_SIZE],
+    /// First-order IIR low-pass filter state for anti-aliasing.
+    lpf_state: f64,
 }
 
 impl Psg {
@@ -4490,6 +4670,7 @@ impl Psg {
             irq_pending: false,
             channels: [PsgChannel::default(); PSG_CHANNEL_COUNT],
             waveform_ram: [0; PSG_CHANNEL_COUNT * PSG_WAVE_SIZE],
+            lpf_state: 0.0,
         }
     }
 
@@ -4570,11 +4751,13 @@ impl Psg {
                 let ch = self.current_channel;
                 let channel = &mut self.channels[ch];
                 channel.frequency = (channel.frequency & 0x0F00) | value as u16;
+                channel.phase_step = Self::phase_step_for_period(channel.frequency);
             }
             PSG_REG_FREQ_HI => {
                 let ch = self.current_channel;
                 let channel = &mut self.channels[ch];
                 channel.frequency = (channel.frequency & 0x00FF) | (((value & 0x0F) as u16) << 8);
+                channel.phase_step = Self::phase_step_for_period(channel.frequency);
             }
             PSG_REG_CH_CONTROL => {
                 let ch = self.current_channel;
@@ -4590,7 +4773,7 @@ impl Psg {
                     channel.phase = 0;
                     channel.wave_pos = channel.wave_write_pos;
                     channel.noise_phase = 0;
-                    channel.noise_lfsr = 0x4000;
+                    channel.noise_lfsr = 1;
                 }
             }
             PSG_REG_CH_BALANCE => {
@@ -4673,6 +4856,30 @@ impl Psg {
         self.irq_pending = false;
     }
 
+    #[inline]
+    fn phase_step_for_period(period: u16) -> u32 {
+        Self::phase_step_table()[(period & 0x0FFF) as usize]
+    }
+
+    #[inline]
+    fn phase_step_table() -> &'static [u32; PSG_PERIOD_ENTRIES] {
+        static TABLE: std::sync::OnceLock<[u32; PSG_PERIOD_ENTRIES]> = std::sync::OnceLock::new();
+        TABLE.get_or_init(|| {
+            let mut table = [1u32; PSG_PERIOD_ENTRIES];
+            for (period, slot) in table.iter_mut().enumerate() {
+                let divider = if period == 0 {
+                    0x1000_u64
+                } else {
+                    period as u64
+                };
+                *slot = ((((PSG_CLOCK_HZ as u64) << PSG_PHASE_FRAC_BITS)
+                    / (divider * AUDIO_SAMPLE_RATE as u64))
+                    .max(1)) as u32;
+            }
+            table
+        })
+    }
+
     fn generate_sample(&mut self) -> i16 {
         self.advance_waveforms();
         let mut mix: i32 = 0;
@@ -4680,8 +4887,17 @@ impl Psg {
             let state = self.channels[channel_index];
             mix += self.sample_channel(channel_index, state);
         }
-        let scaled = (mix * PSG_OUTPUT_GAIN) / PSG_LEVEL_NORMALIZER.max(1);
-        scaled.clamp(i16::MIN as i32, i16::MAX as i32) as i16
+        // sample_channel() returns values with 16 fractional bits.
+        // Per-channel max = 15 * 65536 = 983,040; 6-channel max = 5,898,240.
+        // Apply gain and shift: (mix * gain) >> 16.
+        // With PSG_OUTPUT_GAIN=256: max = (5,898,240 * 256) >> 16 = 23,040.
+        let scaled = ((mix as i64 * PSG_OUTPUT_GAIN as i64) >> 16) as i32;
+        let clamped = scaled.clamp(i16::MIN as i32, i16::MAX as i32) as f64;
+        // First-order IIR low-pass filter (~14 kHz cutoff at 44.1 kHz).
+        // alpha ≈ 2*pi*fc / (2*pi*fc + fs) ≈ 0.67 for fc=14000, fs=44100
+        const LPF_ALPHA: f64 = 0.67;
+        self.lpf_state = self.lpf_state + LPF_ALPHA * (clamped - self.lpf_state);
+        self.lpf_state as i16
     }
 
     fn advance_waveforms(&mut self) {
@@ -4696,34 +4912,40 @@ impl Psg {
                 continue;
             }
             if idx >= 4 && ch.noise_control & PSG_NOISE_ENABLE != 0 {
-                let noise_rate = (32u32 - (ch.noise_control & PSG_NOISE_FREQ_MASK) as u32).max(1);
-                ch.noise_phase = ch.noise_phase.saturating_add(noise_rate << 2);
-                let steps = (ch.noise_phase >> 8) as usize;
-                ch.noise_phase &= 0xFF;
-                for _ in 0..steps.max(1) {
-                    let feedback = ((ch.noise_lfsr >> 0) ^ (ch.noise_lfsr >> 1)) & 0x01;
-                    ch.noise_lfsr = (ch.noise_lfsr >> 1) | (feedback << 14);
+                // HuC6280 noise generator (Mednafen reference):
+                // - 18-bit LFSR with taps at bits 0, 1, 11, 12, 17
+                // - Noise period: NF = noisectrl & 0x1F
+                //   raw = 31 - NF; if raw==0 then period=64, else period = raw * 128
+                // - LFSR steps once per `period` PSG clock cycles
+                // Use 16-bit fixed-point accumulator for precision.
+                let nf = (ch.noise_control & PSG_NOISE_FREQ_MASK) as u32;
+                let raw = 31u32.saturating_sub(nf);
+                let period = if raw == 0 { 64u64 } else { raw as u64 * 128 };
+                let noise_step = ((PSG_CLOCK_HZ as u64) << 16)
+                    / (period * AUDIO_SAMPLE_RATE as u64);
+                ch.noise_phase = ch.noise_phase.wrapping_add(noise_step.max(1) as u32);
+                let steps = (ch.noise_phase >> 16) as usize;
+                ch.noise_phase &= 0xFFFF;
+                for _ in 0..steps {
+                    let lfsr = ch.noise_lfsr;
+                    let feedback = ((lfsr >> 0) ^ (lfsr >> 1)
+                        ^ (lfsr >> 11) ^ (lfsr >> 12) ^ (lfsr >> 17))
+                        & 0x01;
+                    ch.noise_lfsr = (lfsr >> 1) | (feedback << 17);
                     if ch.noise_lfsr == 0 {
-                        ch.noise_lfsr = 0x4000;
+                        ch.noise_lfsr = 1;
                     }
                 }
                 continue;
             }
 
-            let mut effective_period = ch.frequency as i32;
-            if idx == 0 && lfo_enabled {
-                effective_period = (effective_period + lfo_mod).clamp(0, 0x0FFF);
-            }
-            // HuC6280 PSG uses a divider. 0x001 is the highest pitch and 0x000 the lowest.
-            let divider = if effective_period <= 0 {
-                0x1000_u32
+            let step_fp = if idx == 0 && lfo_enabled {
+                let effective_period = (ch.frequency as i32 + lfo_mod).clamp(0, 0x0FFF) as u16;
+                Self::phase_step_for_period(effective_period)
             } else {
-                effective_period as u32
+                ch.phase_step.max(1)
             };
-            let step_fp = (((PSG_CLOCK_HZ as u64) << PSG_PHASE_FRAC_BITS)
-                / (divider as u64 * AUDIO_SAMPLE_RATE as u64))
-                .max(1);
-            let phase = ch.phase.wrapping_add(step_fp as u32);
+            let phase = ch.phase.wrapping_add(step_fp);
             let step = (phase >> PSG_PHASE_FRAC_BITS) as u8;
             ch.phase = phase & PSG_PHASE_FRAC_MASK;
             if step != 0 {
@@ -4754,18 +4976,33 @@ impl Psg {
             return 0;
         }
 
-        let volume = (state.control & PSG_CH_CTRL_VOLUME_MASK) as i32;
-        if volume == 0 {
-            return 0;
-        }
+        // Logarithmic volume mixing (Mednafen-compatible).
+        // Combine channel volume, channel balance, and main balance as
+        // attenuation indices (additive in dB domain).
+        let db_table = psg_db_table();
+        let scale_tab = psg_balance_scale_tab();
 
-        let ch_left = ((state.balance >> 4) & 0x0F) as i32;
-        let ch_right = (state.balance & 0x0F) as i32;
-        let master_left = ((self.main_balance >> 4) & 0x0F) as i32;
-        let master_right = (self.main_balance & 0x0F) as i32;
-        let left = raw * volume * ch_left * master_left;
-        let right = raw * volume * ch_right * master_right;
-        (left + right) / 2
+        // Channel volume: 5-bit, 31=max(0 attenuation), 0=min(31 attenuation)
+        let al = 0x1F_u8.wrapping_sub(state.control & PSG_CH_CTRL_VOLUME_MASK);
+
+        // Channel balance: 4-bit per side, scaled to 5-bit range
+        let bal_l = 0x1F - scale_tab[((state.balance >> 4) & 0x0F) as usize];
+        let bal_r = 0x1F - scale_tab[(state.balance & 0x0F) as usize];
+
+        // Main balance: 4-bit per side, scaled to 5-bit range
+        let gbal_l = 0x1F - scale_tab[((self.main_balance >> 4) & 0x0F) as usize];
+        let gbal_r = 0x1F - scale_tab[(self.main_balance & 0x0F) as usize];
+
+        // Sum attenuations (clamped to 31 = silence)
+        let vol_l = ((al as u16 + bal_l as u16 + gbal_l as u16).min(0x1F)) as usize;
+        let vol_r = ((al as u16 + bal_r as u16 + gbal_r as u16).min(0x1F)) as usize;
+
+        // Apply logarithmic volume (fixed-point 16.16).
+        // Return with 16 fractional bits intact; generate_sample() shifts after
+        // accumulating all channels and applying the output gain.
+        let left = raw as i64 * db_table[vol_l] as i64;
+        let right = raw as i64 * db_table[vol_r] as i64;
+        ((left + right) / 2) as i32
     }
 
     fn lfo_enabled(&self) -> bool {
@@ -5236,6 +5473,10 @@ mod tests {
     fn mpr_mirrors_apply_across_high_page() {
         let mut bus = Bus::new();
         bus.load_rom_image(vec![0x55; PAGE_SIZE * 2]);
+
+        // MPR registers at $FF80-$FFBF are only accessible when MPR7
+        // maps to the hardware page ($FF).
+        bus.set_mpr(7, 0xFF);
 
         // 0xFF95 mirrors MPR5
         bus.write(0xFF95, (bus.total_ram_pages() + 1) as u8);
@@ -7525,7 +7766,7 @@ mod tests {
         bus.write_io(0x1C61, PSG_NOISE_ENABLE | 0x1F);
 
         let mut distinct = std::collections::BTreeSet::new();
-        for _ in 0..64 {
+        for _ in 0..2048 {
             distinct.insert(bus.psg_sample());
         }
         assert!(

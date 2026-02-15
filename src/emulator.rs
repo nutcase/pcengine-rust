@@ -370,6 +370,10 @@ impl Emulator {
         self.cycles
     }
 
+    pub fn set_audio_batch_size(&mut self, samples: usize) {
+        self.audio_batch_size = samples.max(1);
+    }
+
     pub fn take_audio_samples(&mut self) -> Option<Vec<i16>> {
         if self.audio_buffer.len() < self.audio_batch_size {
             return None;
@@ -541,7 +545,7 @@ mod tests {
         emu.bus.write_u16(0xFFFA, 0x8011);
         emu.reset();
 
-        emu.run_until_halt(Some(2_000));
+        emu.run_until_halt(Some(10_000));
 
         assert!(emu.bus.read(0x4000) > 0);
     }

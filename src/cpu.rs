@@ -52,7 +52,7 @@ impl Cpu {
             pc: 0,
             status: FLAG_INTERRUPT_DISABLE,
             halted: false,
-            clock_high_speed: false,
+            clock_high_speed: true,
             waiting: false,
             irq_pending: false,
             nmi_pending: false,
@@ -67,7 +67,7 @@ impl Cpu {
         self.pc = bus.read_u16(reset_vector);
         self.status = FLAG_INTERRUPT_DISABLE;
         self.halted = false;
-        self.clock_high_speed = false;
+        self.clock_high_speed = true;
         self.waiting = false;
         self.irq_pending = false;
         self.nmi_pending = false;
@@ -83,11 +83,24 @@ impl Cpu {
         self.nmi_pending = true;
     }
 
+    /// HuC6280-accurate cycle table.
+    ///
+    /// Key differences from 65C02:
+    ///   - ZP read/write: 4 (was 3)
+    ///   - Absolute read/write: 5 (was 4)
+    ///   - (ind),Y / (zp): 7 (was 5+page-cross)
+    ///   - (ind,X): 7 (was 6)
+    ///   - JSR/RTS/RTI: 7 (was 6)
+    ///   - BRK: 8 (was 7)
+    ///   - JMP abs: 4 (was 3)
+    ///   - JMP (ind): 7 (was 5)
+    ///   - No page-crossing penalties
+    ///   - Branch taken: +2 (not +1)
     #[inline]
     #[allow(unreachable_patterns)]
     fn opcode_base_cycles(opcode: u8) -> u8 {
         match opcode {
-            // 2-cycle instructions
+            // 2-cycle: implied, accumulator, immediate, branches (not-taken base)
             0x09 | 0x0A | 0x0B | 0x10 | 0x18 | 0x1A | 0x29 | 0x2A | 0x2B | 0x30 | 0x38 | 0x3A
             | 0x49 | 0x4A | 0x50 | 0x58 | 0x62 | 0x69 | 0x6A | 0x70 | 0x78 | 0x80 | 0x82 | 0x88
             | 0x89 | 0x8A | 0x90 | 0x98 | 0x9A | 0xA0 | 0xA2 | 0xA8 | 0xA9 | 0xAA | 0xB0 | 0xB8
@@ -95,36 +108,40 @@ impl Cpu {
             | 0xEB | 0xF0 | 0xF4 | 0xF8 | 0x1B | 0x33 | 0x3B | 0x4B | 0x5B | 0x5C | 0x63 | 0x6B
             | 0x8B | 0x9B | 0xAB | 0xBB | 0xDC | 0xE2 | 0xFB | 0xFC => 2,
 
-            // 3-cycle instructions
-            0x02 | 0x05 | 0x08 | 0x22 | 0x24 | 0x25 | 0x42 | 0x45 | 0x48 | 0x4C | 0x54 | 0x5A
-            | 0x64 | 0x65 | 0x84 | 0x85 | 0x86 | 0xA4 | 0xA5 | 0xA6 | 0xC4 | 0xC5 | 0xCB | 0xD4
-            | 0xDA | 0xDB | 0xE4 | 0xE5 => 3,
+            // 3-cycle: push (PHP/PHA/PHY/PHX), SXY/SAX/SAY, CSL/CSH, WAI
+            0x02 | 0x08 | 0x22 | 0x42 | 0x48 | 0x54 | 0x5A | 0xCB | 0xD4 | 0xDA | 0xDB => 3,
 
-            // 4-cycle instructions
-            0x0D | 0x15 | 0x19 | 0x1D | 0x28 | 0x2C | 0x2D | 0x34 | 0x35 | 0x39 | 0x3C | 0x3D
-            | 0x43 | 0x4D | 0x55 | 0x59 | 0x5D | 0x68 | 0x6D | 0x74 | 0x75 | 0x79 | 0x7A | 0x7D
-            | 0x8C | 0x8D | 0x8E | 0x94 | 0x95 | 0x96 | 0x9C | 0xAC | 0xAD | 0xAE | 0xB4 | 0xB5
-            | 0xB6 | 0xB9 | 0xBC | 0xBD | 0xBE | 0xCC | 0xCD | 0xD5 | 0xD9 | 0xDD | 0xEC | 0xED
-            | 0xF5 | 0xF9 | 0xFA | 0xFD => 4,
+            // 4-cycle: ZP read/write, ZP-indexed read/write, PLP/PLA/PLY/PLX,
+            //          JMP abs, TMA
+            0x05 | 0x15 | 0x24 | 0x25 | 0x28 | 0x34 | 0x35 | 0x43 | 0x45 | 0x4C | 0x55 | 0x64
+            | 0x65 | 0x68 | 0x74 | 0x75 | 0x7A | 0x84 | 0x85 | 0x86 | 0x94 | 0x95 | 0x96 | 0xA4
+            | 0xA5 | 0xA6 | 0xB4 | 0xB5 | 0xB6 | 0xC4 | 0xC5 | 0xD5 | 0xE4 | 0xE5 | 0xF5
+            | 0xFA => 4,
 
-            // 5-cycle instructions
-            0x03 | 0x04 | 0x06 | 0x07 | 0x0F | 0x11 | 0x12 | 0x13 | 0x14 | 0x17 | 0x1F | 0x23
-            | 0x26 | 0x27 | 0x2F | 0x31 | 0x32 | 0x37 | 0x3F | 0x46 | 0x47 | 0x4F | 0x51 | 0x52
-            | 0x53 | 0x57 | 0x5F | 0x66 | 0x67 | 0x6C | 0x6F | 0x71 | 0x72 | 0x77 | 0x7F | 0x87
-            | 0x8F | 0x92 | 0x97 | 0x99 | 0x9D | 0x9E | 0x9F | 0xA7 | 0xAF | 0xB1 | 0xB2 | 0xB7
-            | 0xBF | 0xC6 | 0xC7 | 0xCF | 0xD1 | 0xD2 | 0xD7 | 0xDF | 0xE6 | 0xE7 | 0xEF | 0xF1
-            | 0xF2 | 0xF7 | 0xFF => 5,
+            // 5-cycle: absolute read/write, absolute indexed read/write,
+            //          ST0/ST1/ST2, TAM
+            0x03 | 0x0D | 0x13 | 0x19 | 0x1D | 0x23 | 0x2C | 0x2D | 0x39 | 0x3C | 0x3D | 0x4D
+            | 0x53 | 0x59 | 0x5D | 0x6D | 0x79 | 0x7D | 0x8C | 0x8D | 0x8E | 0x99 | 0x9C | 0x9D
+            | 0x9E | 0xAC | 0xAD | 0xAE | 0xB9 | 0xBC | 0xBD | 0xBE | 0xCC | 0xCD | 0xD9 | 0xDD
+            | 0xEC | 0xED | 0xF9 | 0xFD => 5,
 
-            // 6-cycle instructions
-            0x01 | 0x0C | 0x0E | 0x16 | 0x1C | 0x20 | 0x21 | 0x2E | 0x36 | 0x40 | 0x41 | 0x4E
-            | 0x56 | 0x60 | 0x61 | 0x6E | 0x76 | 0x7C | 0x81 | 0x91 | 0xA1 | 0xC1 | 0xCE | 0xD6
-            | 0xE1 | 0xEE | 0xF6 => 6,
+            // 6-cycle: ZP RMW, absolute RMW, ZP-indexed RMW,
+            //          BBR/BBS (not-taken base)
+            0x04 | 0x06 | 0x0C | 0x0E | 0x0F | 0x14 | 0x16 | 0x1C | 0x1F | 0x26 | 0x2E | 0x2F
+            | 0x36 | 0x3F | 0x46 | 0x4E | 0x4F | 0x56 | 0x5F | 0x66 | 0x6E | 0x6F | 0x76 | 0x7F | 0x8F
+            | 0x9F | 0xAF | 0xBF | 0xC6 | 0xCE | 0xCF | 0xD6 | 0xDF | 0xE6 | 0xEE | 0xEF | 0xF6
+            | 0xFF => 6,
 
-            // 7-cycle instructions
-            0x00 | 0x1E | 0x3E | 0x5E | 0x7B | 0x7E | 0x83 | 0xA3 | 0xDE | 0xFE => 7,
+            // 7-cycle: (ind,X), (ind),Y, (zp indirect), JMP (ind), JMP (abs,X),
+            //          JSR, RTS, RTI, RMB/SMB, absolute-indexed RMW
+            0x01 | 0x07 | 0x11 | 0x12 | 0x17 | 0x20 | 0x21 | 0x27 | 0x31 | 0x32 | 0x37 | 0x40
+            | 0x41 | 0x47 | 0x51 | 0x52 | 0x57 | 0x60 | 0x61 | 0x67 | 0x6C | 0x71 | 0x72 | 0x77
+            | 0x7C | 0x81 | 0x87 | 0x91 | 0x92 | 0x97 | 0xA1 | 0xA7 | 0xB1 | 0xB2 | 0xB7 | 0xC1
+            | 0xC7 | 0xD1 | 0xD2 | 0xD7 | 0xE1 | 0xE7 | 0xF1 | 0xF2 | 0xF7
+            | 0x1E | 0x3E | 0x5E | 0x7E | 0xDE | 0xFE => 7,
 
-            // 8-cycle instructions
-            0x44 | 0x93 | 0xB3 => 8,
+            // 8-cycle: BRK, BSR, block-transfer setup (BBR/BBS taken handled separately)
+            0x00 | 0x44 | 0x7B | 0x83 | 0xA3 | 0x93 | 0xB3 => 8,
 
             // Block transfer setup cycles; per-byte transfer cost is accounted elsewhere.
             0x73 | 0xC3 | 0xD3 | 0xE3 | 0xF3 => 17,
@@ -196,19 +213,19 @@ impl Cpu {
                 self.lda(bus.read(addr), base_cycles)
             }
             0xBD => {
-                let (addr, crossed) = self.addr_absolute_x(bus);
+                let (addr, _) = self.addr_absolute_x(bus);
                 let cycles = self.lda(bus.read(addr), base_cycles);
-                cycles + crossed as u8
+                cycles
             }
             0xB9 => {
-                let (addr, crossed) = self.addr_absolute_y(bus);
+                let (addr, _) = self.addr_absolute_y(bus);
                 let cycles = self.lda(bus.read(addr), base_cycles);
-                cycles + crossed as u8
+                cycles
             }
             0xB1 => {
-                let (addr, crossed) = self.addr_indirect_y(bus);
+                let (addr, _) = self.addr_indirect_y(bus);
                 let cycles = self.lda(bus.read(addr), base_cycles);
-                cycles + crossed as u8
+                cycles
             }
             0xB2 => {
                 let addr = self.addr_indirect(bus);
@@ -233,9 +250,9 @@ impl Cpu {
                 self.ldx(bus.read(addr), base_cycles)
             }
             0xBE => {
-                let (addr, crossed) = self.addr_absolute_y(bus);
+                let (addr, _) = self.addr_absolute_y(bus);
                 let cycles = self.ldx(bus.read(addr), base_cycles);
-                cycles + crossed as u8
+                cycles
             }
 
             // Load Y
@@ -256,9 +273,9 @@ impl Cpu {
                 self.ldy(bus.read(addr), base_cycles)
             }
             0xBC => {
-                let (addr, crossed) = self.addr_absolute_x(bus);
+                let (addr, _) = self.addr_absolute_x(bus);
                 let cycles = self.ldy(bus.read(addr), base_cycles);
-                cycles + crossed as u8
+                cycles
             }
 
             // Store A
@@ -363,22 +380,22 @@ impl Cpu {
                 self.adc_with_t(bus, value, base_cycles, false, t_mode_active)
             }
             0x7D => {
-                let (addr, crossed) = self.addr_absolute_x(bus);
+                let (addr, _) = self.addr_absolute_x(bus);
                 let value = bus.read(addr);
                 let cycles = self.adc_with_t(bus, value, base_cycles, false, t_mode_active);
-                cycles + crossed as u8
+                cycles
             }
             0x79 => {
-                let (addr, crossed) = self.addr_absolute_y(bus);
+                let (addr, _) = self.addr_absolute_y(bus);
                 let value = bus.read(addr);
                 let cycles = self.adc_with_t(bus, value, base_cycles, false, t_mode_active);
-                cycles + crossed as u8
+                cycles
             }
             0x71 => {
-                let (addr, crossed) = self.addr_indirect_y(bus);
+                let (addr, _) = self.addr_indirect_y(bus);
                 let value = bus.read(addr);
                 let cycles = self.adc_with_t(bus, value, base_cycles, false, t_mode_active);
-                cycles + crossed as u8
+                cycles
             }
             0x72 => {
                 let addr = self.addr_indirect(bus);
@@ -411,10 +428,10 @@ impl Cpu {
                 self.sbc_with_t(bus, value, base_cycles, false, t_mode_active)
             }
             0xF1 => {
-                let (addr, crossed) = self.addr_indirect_y(bus);
+                let (addr, _) = self.addr_indirect_y(bus);
                 let value = bus.read(addr);
                 let cycles = self.sbc_with_t(bus, value, base_cycles, false, t_mode_active);
-                cycles + crossed as u8
+                cycles
             }
             0xF2 => {
                 let addr = self.addr_indirect(bus);
@@ -422,16 +439,16 @@ impl Cpu {
                 self.sbc_with_t(bus, value, base_cycles, false, t_mode_active)
             }
             0xFD => {
-                let (addr, crossed) = self.addr_absolute_x(bus);
+                let (addr, _) = self.addr_absolute_x(bus);
                 let value = bus.read(addr);
                 let cycles = self.sbc_with_t(bus, value, base_cycles, false, t_mode_active);
-                cycles + crossed as u8
+                cycles
             }
             0xF9 => {
-                let (addr, crossed) = self.addr_absolute_y(bus);
+                let (addr, _) = self.addr_absolute_y(bus);
                 let value = bus.read(addr);
                 let cycles = self.sbc_with_t(bus, value, base_cycles, false, t_mode_active);
-                cycles + crossed as u8
+                cycles
             }
 
             // Logical
@@ -464,22 +481,22 @@ impl Cpu {
                 self.and_with_t(bus, value, base_cycles, false, t_mode_active)
             }
             0x3D => {
-                let (addr, crossed) = self.addr_absolute_x(bus);
+                let (addr, _) = self.addr_absolute_x(bus);
                 let value = bus.read(addr);
                 let cycles = self.and_with_t(bus, value, base_cycles, false, t_mode_active);
-                cycles + crossed as u8
+                cycles
             }
             0x39 => {
-                let (addr, crossed) = self.addr_absolute_y(bus);
+                let (addr, _) = self.addr_absolute_y(bus);
                 let value = bus.read(addr);
                 let cycles = self.and_with_t(bus, value, base_cycles, false, t_mode_active);
-                cycles + crossed as u8
+                cycles
             }
             0x31 => {
-                let (addr, crossed) = self.addr_indirect_y(bus);
+                let (addr, _) = self.addr_indirect_y(bus);
                 let value = bus.read(addr);
                 let cycles = self.and_with_t(bus, value, base_cycles, false, t_mode_active);
-                cycles + crossed as u8
+                cycles
             }
             0x32 => {
                 let addr = self.addr_indirect(bus);
@@ -512,22 +529,22 @@ impl Cpu {
                 self.ora_with_t(bus, value, base_cycles, false, t_mode_active)
             }
             0x1D => {
-                let (addr, crossed) = self.addr_absolute_x(bus);
+                let (addr, _) = self.addr_absolute_x(bus);
                 let value = bus.read(addr);
                 let cycles = self.ora_with_t(bus, value, base_cycles, false, t_mode_active);
-                cycles + crossed as u8
+                cycles
             }
             0x19 => {
-                let (addr, crossed) = self.addr_absolute_y(bus);
+                let (addr, _) = self.addr_absolute_y(bus);
                 let value = bus.read(addr);
                 let cycles = self.ora_with_t(bus, value, base_cycles, false, t_mode_active);
-                cycles + crossed as u8
+                cycles
             }
             0x11 => {
-                let (addr, crossed) = self.addr_indirect_y(bus);
+                let (addr, _) = self.addr_indirect_y(bus);
                 let value = bus.read(addr);
                 let cycles = self.ora_with_t(bus, value, base_cycles, false, t_mode_active);
-                cycles + crossed as u8
+                cycles
             }
             0x12 => {
                 let addr = self.addr_indirect(bus);
@@ -560,22 +577,22 @@ impl Cpu {
                 self.eor_with_t(bus, value, base_cycles, false, t_mode_active)
             }
             0x5D => {
-                let (addr, crossed) = self.addr_absolute_x(bus);
+                let (addr, _) = self.addr_absolute_x(bus);
                 let value = bus.read(addr);
                 let cycles = self.eor_with_t(bus, value, base_cycles, false, t_mode_active);
-                cycles + crossed as u8
+                cycles
             }
             0x59 => {
-                let (addr, crossed) = self.addr_absolute_y(bus);
+                let (addr, _) = self.addr_absolute_y(bus);
                 let value = bus.read(addr);
                 let cycles = self.eor_with_t(bus, value, base_cycles, false, t_mode_active);
-                cycles + crossed as u8
+                cycles
             }
             0x51 => {
-                let (addr, crossed) = self.addr_indirect_y(bus);
+                let (addr, _) = self.addr_indirect_y(bus);
                 let value = bus.read(addr);
                 let cycles = self.eor_with_t(bus, value, base_cycles, false, t_mode_active);
-                cycles + crossed as u8
+                cycles
             }
             0x52 => {
                 let addr = self.addr_indirect(bus);
@@ -597,9 +614,9 @@ impl Cpu {
                 self.bit(bus.read(addr), base_cycles)
             }
             0x3C => {
-                let (addr, crossed) = self.addr_absolute_x(bus);
+                let (addr, _) = self.addr_absolute_x(bus);
                 let cycles = self.bit(bus.read(addr), base_cycles);
-                cycles + crossed as u8
+                cycles
             }
             0x89 => {
                 let value = self.fetch_byte(bus);
@@ -844,19 +861,19 @@ impl Cpu {
                 self.cmp(bus.read(addr), self.a, base_cycles)
             }
             0xDD => {
-                let (addr, crossed) = self.addr_absolute_x(bus);
+                let (addr, _) = self.addr_absolute_x(bus);
                 let cycles = self.cmp(bus.read(addr), self.a, base_cycles);
-                cycles + crossed as u8
+                cycles
             }
             0xD9 => {
-                let (addr, crossed) = self.addr_absolute_y(bus);
+                let (addr, _) = self.addr_absolute_y(bus);
                 let cycles = self.cmp(bus.read(addr), self.a, base_cycles);
-                cycles + crossed as u8
+                cycles
             }
             0xD1 => {
-                let (addr, crossed) = self.addr_indirect_y(bus);
+                let (addr, _) = self.addr_indirect_y(bus);
                 let cycles = self.cmp(bus.read(addr), self.a, base_cycles);
-                cycles + crossed as u8
+                cycles
             }
             0xD2 => {
                 let addr = self.addr_indirect(bus);
@@ -1531,7 +1548,7 @@ impl Cpu {
         self.pc = bus.read_u16(vector);
         self.waiting = false;
         self.halted = false;
-        7
+        8 // HuC6280: IRQ/NMI vectoring takes 8 cycles
     }
 
     fn exec_block_transfer(&mut self, bus: &mut Bus, mode: BlockMode, cycles: u8) -> u8 {
@@ -1616,18 +1633,14 @@ impl Cpu {
         let bit_set = (value & (1 << bit)) != 0;
         let condition = if branch_if_set { bit_set } else { !bit_set };
 
-        let mut total_cycles = cycles;
         if condition {
-            let prev_pc = self.pc;
             let target = ((self.pc as i32 + offset as i32) as u32) as u16;
             self.pc = target;
-            total_cycles += 2;
-            if Cpu::page_crossed(prev_pc, target) {
-                total_cycles += 1;
-            }
+            // HuC6280: +2 for taken, no page-crossing penalty
+            cycles + 2
+        } else {
+            cycles
         }
-
-        total_cycles
     }
 
     fn tst(&mut self, mask: u8, value: u8) {
@@ -1695,13 +1708,9 @@ impl Cpu {
     fn branch(&mut self, bus: &mut Bus, condition: bool, cycles: u8) -> u8 {
         let offset = self.fetch_byte(bus) as i8;
         if condition {
-            let prev_pc = self.pc;
             self.pc = ((self.pc as i32 + offset as i32) as u32) as u16;
-            let mut total_cycles = cycles.saturating_add(1);
-            if Cpu::page_crossed(prev_pc, self.pc) {
-                total_cycles += 1;
-            }
-            total_cycles
+            // HuC6280: taken branches always +2 cycles, no page-crossing penalty
+            cycles.saturating_add(2)
         } else {
             cycles
         }
@@ -2058,7 +2067,7 @@ mod tests {
             }
         }
 
-        for (opcode, expected) in [(0xA9, 2), (0xB1, 5), (0x7B, 7), (0x44, 8), (0x73, 17)] {
+        for (opcode, expected) in [(0xA9, 2), (0xB1, 7), (0x7B, 8), (0x44, 8), (0x73, 17)] {
             assert_eq!(Cpu::opcode_base_cycles(opcode), expected);
         }
     }
@@ -2180,7 +2189,7 @@ mod tests {
 
         cpu.status &= !FLAG_ZERO;
         let cycles = cpu.step(&mut bus);
-        assert_eq!(cycles, 3); // branch taken same page
+        assert_eq!(cycles, 4); // HuC6280: branch taken = base 2 + 2 penalty
         assert_eq!(cpu.pc, 0x8004);
     }
 
@@ -2211,11 +2220,12 @@ mod tests {
 
         let cycles = cpu.step(&mut bus);
         assert_eq!(cpu.a, 0xAB);
-        assert_eq!(cycles, 6);
+        assert_eq!(cycles, 7);
     }
 
     #[test]
     fn lda_indirect_y_page_cross_adds_cycle() {
+        // HuC6280: (ind),Y is always 7 cycles, no page-crossing penalty
         let program = [0xB1, 0x20, 0x00];
         let (mut cpu, mut bus) = setup_cpu_with_program(&program);
         bus.write(0x0020, 0xFF);
@@ -2225,7 +2235,7 @@ mod tests {
 
         let cycles = cpu.step(&mut bus);
         assert_eq!(cpu.a, 0x34);
-        assert_eq!(cycles, 6);
+        assert_eq!(cycles, 7); // no extra cycle for page cross on HuC6280
     }
 
     #[test]
@@ -2239,7 +2249,7 @@ mod tests {
 
         let cycles = cpu.step(&mut bus);
         assert_eq!(bus.read(0x4405), 0x77);
-        assert_eq!(cycles, 6);
+        assert_eq!(cycles, 7);
     }
 
     #[test]
@@ -2274,25 +2284,25 @@ mod tests {
 
         cpu.step(&mut bus); // LDA
         let cycles = cpu.step(&mut bus); // ORA (zp)
-        assert_eq!(cycles, 5);
+        assert_eq!(cycles, 7);
         assert_eq!(cpu.a, 0x13);
 
         let cycles = cpu.step(&mut bus); // AND (zp)
-        assert_eq!(cycles, 5);
+        assert_eq!(cycles, 7);
         assert_eq!(cpu.a, 0x03);
 
         let cycles = cpu.step(&mut bus); // EOR (zp)
-        assert_eq!(cycles, 5);
+        assert_eq!(cycles, 7);
         assert_eq!(cpu.a, 0xFC);
 
         cpu.step(&mut bus); // CLC
         let cycles = cpu.step(&mut bus); // ADC (zp)
-        assert_eq!(cycles, 5);
+        assert_eq!(cycles, 7);
         assert_eq!(cpu.a, 0xFD);
         assert!(!cpu.flag(FLAG_CARRY));
 
         let cycles = cpu.step(&mut bus); // CMP (zp)
-        assert_eq!(cycles, 5);
+        assert_eq!(cycles, 7);
         assert!(cpu.flag(FLAG_ZERO));
         assert!(cpu.flag(FLAG_CARRY));
     }
@@ -2319,7 +2329,7 @@ mod tests {
         bus.write(0x0040, 0x04);
 
         let cycles = cpu.step(&mut bus);
-        assert_eq!(cycles, 3);
+        assert_eq!(cycles, 4); // HuC6280: ZP read is 4 cycles
         assert!(cpu.flag(FLAG_ZERO));
         assert!(!cpu.flag(FLAG_NEGATIVE));
         assert!(!cpu.flag(FLAG_OVERFLOW));
@@ -2368,7 +2378,7 @@ mod tests {
         bus.write(0x0010, 0x02);
 
         let cycles = cpu.step(&mut bus);
-        assert_eq!(cycles, 5);
+        assert_eq!(cycles, 6); // HuC6280: ZP RMW is 6 cycles
         assert_eq!(bus.read(0x0010), 0x81);
         assert!(!cpu.flag(FLAG_CARRY));
         assert!(cpu.flag(FLAG_NEGATIVE));
@@ -2385,7 +2395,7 @@ mod tests {
         bus.write(0x9005, 0x04);
 
         let cycles = cpu.step(&mut bus);
-        assert_eq!(cycles, 7);
+        assert_eq!(cycles, 8);
         assert_eq!(bus.read(0x9005), 0x82);
         assert_eq!(cpu.a, 0x92);
         assert!(!cpu.flag(FLAG_CARRY));
@@ -2798,7 +2808,7 @@ mod tests {
         bus.write(0x0010, 0x00);
 
         let cycles = cpu.step(&mut bus);
-        assert_eq!(cycles, 7);
+        assert_eq!(cycles, 8); // HuC6280: BBR base 6 + 2 taken
         assert_eq!(cpu.pc, 0x8004);
         cpu.step(&mut bus);
         assert!(cpu.halted);
@@ -2811,7 +2821,7 @@ mod tests {
         bus.write(0x0010, 0x00);
 
         let cycles = cpu.step(&mut bus);
-        assert_eq!(cycles, 5);
+        assert_eq!(cycles, 6); // HuC6280: BBS not-taken base is 6
         assert_eq!(cpu.pc, 0x8003);
         cpu.step(&mut bus);
         assert!(cpu.halted);
@@ -2824,7 +2834,7 @@ mod tests {
         bus.write(0x0010, 0x01);
 
         let cycles = cpu.step(&mut bus);
-        assert_eq!(cycles, 7);
+        assert_eq!(cycles, 8); // HuC6280: BBS base 6 + 2 taken
         assert_eq!(cpu.pc, 0x8004);
         cpu.step(&mut bus);
         assert!(cpu.halted);
@@ -2870,7 +2880,7 @@ mod tests {
         cpu.a = 0x00; // TST does not use A but ensure non-zero
 
         let cycles = cpu.step(&mut bus);
-        assert_eq!(cycles, 7);
+        assert_eq!(cycles, 8); // HuC6280: TST zp is 8 cycles
         assert!(!cpu.flag(FLAG_ZERO));
         assert!(cpu.flag(FLAG_NEGATIVE));
         assert!(cpu.flag(FLAG_OVERFLOW));
@@ -3167,6 +3177,9 @@ mod tests {
     fn writing_mpr_via_memory_updates_mapping() {
         let program = [0xA9, 0x08, 0x8D, 0x80, 0xFF, 0x00];
         let (mut cpu, mut bus) = setup_cpu_with_program(&program);
+        // MPR registers at $FF80-$FFBF are only accessible when the
+        // address maps to the hardware page.
+        bus.set_mpr(7, 0xFF);
 
         cpu.step(&mut bus); // LDA #$08
         cpu.step(&mut bus); // STA $FF80
@@ -3196,7 +3209,7 @@ mod tests {
         bus.tick(64, true);
         bus.raise_irq(IRQ_REQUEST_TIMER);
         let irq_cycles = cpu.step(&mut bus);
-        assert_eq!(irq_cycles, 7);
+        assert_eq!(irq_cycles, 8); // HuC6280: IRQ vectoring is 8 cycles
         assert_eq!(cpu.pc, 0x9000);
     }
 
@@ -3210,7 +3223,7 @@ mod tests {
         cpu.status = FLAG_CARRY;
         bus.raise_irq(IRQ_REQUEST_TIMER);
         let irq_cycles = cpu.step(&mut bus);
-        assert_eq!(irq_cycles, 7);
+        assert_eq!(irq_cycles, 8); // HuC6280: IRQ vectoring is 8 cycles
         assert_eq!(cpu.pc, 0x9000);
         assert_eq!(cpu.sp, 0xFA);
 
@@ -3220,7 +3233,7 @@ mod tests {
         assert_eq!(bus.read(0x01FD), 0x80); // PCH
 
         let rti_cycles = cpu.step(&mut bus);
-        assert_eq!(rti_cycles, 6);
+        assert_eq!(rti_cycles, 7); // HuC6280: RTI is 7 cycles
         assert_eq!(cpu.pc, 0x8000);
         assert_eq!(cpu.sp, 0xFD);
         assert!(cpu.flag(FLAG_CARRY));
@@ -3241,7 +3254,7 @@ mod tests {
         bus.raise_irq(IRQ_REQUEST_IRQ1 | IRQ_REQUEST_IRQ2 | IRQ_REQUEST_TIMER);
 
         let cycles = cpu.step(&mut bus);
-        assert_eq!(cycles, 7);
+        assert_eq!(cycles, 8); // HuC6280: IRQ vectoring is 8 cycles
         assert_eq!(cpu.pc, 0x9000);
         assert_eq!(
             bus.pending_interrupts() & IRQ_REQUEST_IRQ1,
@@ -3263,7 +3276,7 @@ mod tests {
         );
 
         let cycles = cpu.step(&mut bus); // service IRQ1
-        assert_eq!(cycles, 7);
+        assert_eq!(cycles, 8); // HuC6280: IRQ vectoring is 8 cycles
         assert_eq!(cpu.pc, 0x9100);
         assert_eq!(bus.pending_interrupts() & IRQ_REQUEST_IRQ1, 0);
         assert_eq!(
@@ -3273,7 +3286,7 @@ mod tests {
 
         let _ = cpu.step(&mut bus); // RTI from IRQ1 handler
         let cycles = cpu.step(&mut bus); // service IRQ2
-        assert_eq!(cycles, 7);
+        assert_eq!(cycles, 8); // HuC6280: IRQ vectoring is 8 cycles
         assert_eq!(cpu.pc, 0x9200);
         assert_eq!(bus.pending_interrupts() & IRQ_REQUEST_IRQ2, 0);
     }
