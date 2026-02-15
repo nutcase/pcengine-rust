@@ -2433,7 +2433,6 @@ impl Bus {
             x: i32,
             visible_width: usize,
             full_width: usize,
-            width_cells: usize,
             src_tile_y: usize,
             row_in_tile: usize,
             pattern_base_index: usize,
@@ -2540,7 +2539,6 @@ impl Bus {
                     x,
                     visible_width: visible_cells * SPRITE_PATTERN_WIDTH,
                     full_width,
-                    width_cells,
                     src_tile_y,
                     row_in_tile,
                     pattern_base_index,
@@ -2571,7 +2569,7 @@ impl Bus {
                     let src_tile_x = src_x / SPRITE_PATTERN_WIDTH;
                     let col_in_tile = src_x % SPRITE_PATTERN_WIDTH;
                     let pattern_index = sprite.pattern_base_index
-                        + sprite.src_tile_y * sprite.width_cells
+                        + sprite.src_tile_y * 2
                         + src_tile_x;
                     let pattern_base = (pattern_index * SPRITE_PATTERN_WORDS) & vram_mask;
 
@@ -5987,8 +5985,10 @@ mod tests {
 
         set_vdc_control(&mut bus, VDC_CTRL_DISPLAY_FULL);
 
-        for tile in 0..(TILES_WIDE * TILES_HIGH) {
-            write_constant_sprite_tile(&mut bus, BASE_TILE + tile, 0x0F);
+        for cell_y in 0..TILES_HIGH {
+            for cell_x in 0..TILES_WIDE {
+                write_constant_sprite_tile(&mut bus, BASE_TILE + cell_y * 2 + cell_x, 0x0F);
+            }
         }
 
         let sprite_colour = 0x03FF;
