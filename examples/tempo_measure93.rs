@@ -14,8 +14,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     while frames < 100 && total_ticks < 100_000_000 {
         emu.tick();
         total_ticks += 1;
-        if emu.take_frame().is_some() { frames += 1; }
-        if emu.cpu.halted { break; }
+        if emu.take_frame().is_some() {
+            frames += 1;
+        }
+        if emu.cpu.halted {
+            break;
+        }
     }
 
     // Track PSG channel frequency changes over 500 frames (~8.3s)
@@ -23,7 +27,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut freq_changes = [0u64; 6];
     let mut active_frames = [0u64; 6];
 
-    println!("=== Tracking PSG changes from frame {} to {} ===", frames, frames + 500);
+    println!(
+        "=== Tracking PSG changes from frame {} to {} ===",
+        frames,
+        frames + 500
+    );
     println!("Frame-by-frame channel activity:\n");
 
     let start_frame = frames;
@@ -43,7 +51,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                 let key_on = (control & 0x80) != 0;
                 let dda = (control & 0x40) != 0;
 
-                if key_on { active_frames[ch] += 1; }
+                if key_on {
+                    active_frames[ch] += 1;
+                }
 
                 if freq != prev_freqs[ch] && key_on {
                     freq_changes[ch] += 1;
@@ -67,7 +77,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                         } else if ch >= 4 && noise_en {
                             print!("CH{}:N{:02}(v{:02}) ", ch, noise_ctrl & 0x1F, vol);
                         } else {
-                            let hz = if freq == 0 { 0.0 } else { 3_579_545.0 / (32.0 * freq as f64) };
+                            let hz = if freq == 0 {
+                                0.0
+                            } else {
+                                3_579_545.0 / (32.0 * freq as f64)
+                            };
                             print!("CH{}:{:.0}Hz(v{:02}) ", ch, hz, vol);
                         }
                     }
@@ -77,16 +91,22 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
         }
 
-        if emu.cpu.halted { break; }
+        if emu.cpu.halted {
+            break;
+        }
     }
 
     println!("\n=== Summary over {} frames ===", frames - start_frame);
     println!("Channel  Active  FreqChanges  Changes/sec");
     let elapsed = (frames - start_frame) as f64 / 60.0;
     for ch in 0..6 {
-        println!("  CH{}     {:4}      {:4}         {:.1}",
-            ch, active_frames[ch], freq_changes[ch],
-            freq_changes[ch] as f64 / elapsed);
+        println!(
+            "  CH{}     {:4}      {:4}         {:.1}",
+            ch,
+            active_frames[ch],
+            freq_changes[ch],
+            freq_changes[ch] as f64 / elapsed
+        );
     }
 
     // Also measure audio timing

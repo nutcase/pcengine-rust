@@ -4,9 +4,9 @@ use std::error::Error;
 use std::time::Instant;
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let rom_path = std::env::args().nth(1).unwrap_or_else(|| {
-        "roms/Kato-chan & Ken-chan (Japan).pce".to_string()
-    });
+    let rom_path = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "roms/Kato-chan & Ken-chan (Japan).pce".to_string());
     let rom = std::fs::read(&rom_path)?;
     let mut emu = Emulator::new();
     emu.load_hucard(&rom)?;
@@ -42,16 +42,24 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
         }
 
-        if emu.cpu.halted { break; }
+        if emu.cpu.halted {
+            break;
+        }
     }
 
     let total_ms = start.elapsed().as_secs_f64() * 1000.0;
     let total_sec = frames as f64 / 60.0;
     println!(
         "\nTotal: {} frames in {:.1}ms ({:.2}x realtime)",
-        frames, total_ms, total_sec * 1000.0 / total_ms
+        frames,
+        total_ms,
+        total_sec * 1000.0 / total_ms
     );
-    println!("Total samples: {} ({:.1} samples/sec)", total_samples, total_samples as f64 / total_sec);
+    println!(
+        "Total samples: {} ({:.1} samples/sec)",
+        total_samples,
+        total_samples as f64 / total_sec
+    );
 
     Ok(())
 }

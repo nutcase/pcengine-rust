@@ -45,7 +45,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
         }
 
-        if emu.cpu.halted { break; }
+        if emu.cpu.halted {
+            break;
+        }
     }
 
     // Drain remaining audio
@@ -61,17 +63,26 @@ fn main() -> Result<(), Box<dyn Error>> {
     let sample_rate = 44100u32;
     let path = "pl3_title.wav";
     write_wav(path, sample_rate, &all_samples)?;
-    println!("Wrote {} samples ({:.2} sec) to {}", all_samples.len(),
-        all_samples.len() as f64 / sample_rate as f64, path);
+    println!(
+        "Wrote {} samples ({:.2} sec) to {}",
+        all_samples.len(),
+        all_samples.len() as f64 / sample_rate as f64,
+        path
+    );
     println!("Frames: {}", frames);
 
     // Report note change frequency
     let duration_sec = frames as f64 / 60.0;
     println!("\nNote changes over {:.1} seconds:", duration_sec);
     for ch in 0..6 {
-        println!("  CH{}: {} freq changes ({:.1}/sec), {} ctrl changes ({:.1}/sec)",
-            ch, note_changes[ch], note_changes[ch] as f64 / duration_sec,
-            ctrl_changes[ch], ctrl_changes[ch] as f64 / duration_sec);
+        println!(
+            "  CH{}: {} freq changes ({:.1}/sec), {} ctrl changes ({:.1}/sec)",
+            ch,
+            note_changes[ch],
+            note_changes[ch] as f64 / duration_sec,
+            ctrl_changes[ch],
+            ctrl_changes[ch] as f64 / duration_sec
+        );
     }
 
     Ok(())
@@ -90,11 +101,11 @@ fn write_wav(path: &str, sample_rate: u32, samples: &[i16]) -> Result<(), Box<dy
     // fmt chunk
     f.write_all(b"fmt ")?;
     f.write_all(&16u32.to_le_bytes())?; // chunk size
-    f.write_all(&1u16.to_le_bytes())?;  // PCM
-    f.write_all(&1u16.to_le_bytes())?;  // mono
+    f.write_all(&1u16.to_le_bytes())?; // PCM
+    f.write_all(&1u16.to_le_bytes())?; // mono
     f.write_all(&sample_rate.to_le_bytes())?;
     f.write_all(&(sample_rate * 2).to_le_bytes())?; // byte rate
-    f.write_all(&2u16.to_le_bytes())?;  // block align
+    f.write_all(&2u16.to_le_bytes())?; // block align
     f.write_all(&16u16.to_le_bytes())?; // bits per sample
 
     // data chunk

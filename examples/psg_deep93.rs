@@ -20,22 +20,35 @@ fn main() -> Result<(), Box<dyn Error>> {
         if let Some(samples) = emu.take_audio_samples() {
             for &s in &samples {
                 samples_collected += 1;
-                if s != 0 { nonzero_samples += 1; }
+                if s != 0 {
+                    nonzero_samples += 1;
+                }
             }
         }
-        if emu.take_frame().is_some() { frames += 1; }
-        if emu.cpu.halted { break; }
+        if emu.take_frame().is_some() {
+            frames += 1;
+        }
+        if emu.cpu.halted {
+            break;
+        }
     }
 
     println!("=== At frame {} ===", frames);
-    println!("Samples so far: {} (nonzero: {} = {:.1}%)",
-        samples_collected, nonzero_samples,
-        nonzero_samples as f64 / samples_collected.max(1) as f64 * 100.0);
+    println!(
+        "Samples so far: {} (nonzero: {} = {:.1}%)",
+        samples_collected,
+        nonzero_samples,
+        nonzero_samples as f64 / samples_collected.max(1) as f64 * 100.0
+    );
 
     // Dump full PSG state
     let main_bal = emu.bus.psg_main_balance();
-    println!("\nMain balance: ${:02X} (L={}, R={})",
-        main_bal, (main_bal >> 4) & 0x0F, main_bal & 0x0F);
+    println!(
+        "\nMain balance: ${:02X} (L={}, R={})",
+        main_bal,
+        (main_bal >> 4) & 0x0F,
+        main_bal & 0x0F
+    );
 
     for ch in 0..6 {
         let (freq, control, balance, noise_ctrl) = emu.bus.psg_channel_info(ch);
@@ -45,20 +58,31 @@ fn main() -> Result<(), Box<dyn Error>> {
         let volume = control & 0x1F;
         let noise_en = (noise_ctrl & 0x80) != 0;
 
-        let hz = if freq == 0 { 0.0 } else { 3_579_545.0 / (32.0 * freq as f64) };
+        let hz = if freq == 0 {
+            0.0
+        } else {
+            3_579_545.0 / (32.0 * freq as f64)
+        };
 
-        println!("\nCH{}: freq=${:03X}({:.1}Hz) ctrl=${:02X}(key={},dda={},vol={}) bal=${:02X} noise={}",
-            ch, freq, hz, control, key_on, dda_mode, volume, balance, noise_en);
-        println!("  wave_pos={} write_pos={} phase={} step={} dda_val={}",
-            wave_pos, wave_write_pos, phase, phase_step, dda);
+        println!(
+            "\nCH{}: freq=${:03X}({:.1}Hz) ctrl=${:02X}(key={},dda={},vol={}) bal=${:02X} noise={}",
+            ch, freq, hz, control, key_on, dda_mode, volume, balance, noise_en
+        );
+        println!(
+            "  wave_pos={} write_pos={} phase={} step={} dda_val={}",
+            wave_pos, wave_write_pos, phase, phase_step, dda
+        );
 
         // Dump waveform
         let wave = emu.bus.psg_waveform(ch);
         print!("  waveform: ");
         for (i, &v) in wave.iter().enumerate() {
             print!("{:02X}", v);
-            if i % 16 == 15 { print!("\n            "); }
-            else { print!(" "); }
+            if i % 16 == 15 {
+                print!("\n            ");
+            } else {
+                print!(" ");
+            }
         }
         println!();
 
@@ -85,8 +109,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             let left = raw * volume as i32 * ch_left * master_left;
             let right = raw * volume as i32 * ch_right * master_right;
             let sample = (left + right) / 2;
-            println!("  raw={} vol={} ch_L={} ch_R={} master_L={} master_R={}",
-                raw, volume, ch_left, ch_right, master_left, master_right);
+            println!(
+                "  raw={} vol={} ch_L={} ch_R={} master_L={} master_R={}",
+                raw, volume, ch_left, ch_right, master_left, master_right
+            );
             println!("  left={} right={} mixed={}", left, right, sample);
         }
     }
@@ -121,15 +147,25 @@ fn main() -> Result<(), Box<dyn Error>> {
                 frame_samples.push(s);
             }
         }
-        if emu.take_frame().is_some() { frames += 1; }
-        if emu.cpu.halted { break; }
+        if emu.take_frame().is_some() {
+            frames += 1;
+        }
+        if emu.cpu.halted {
+            break;
+        }
     }
 
     let nonzero = frame_samples.iter().filter(|&&s| s != 0).count();
     let min = frame_samples.iter().copied().min().unwrap_or(0);
     let max = frame_samples.iter().copied().max().unwrap_or(0);
-    println!("Frame {} samples: {} (nonzero: {}, min={}, max={})",
-        frames, frame_samples.len(), nonzero, min, max);
+    println!(
+        "Frame {} samples: {} (nonzero: {}, min={}, max={})",
+        frames,
+        frame_samples.len(),
+        nonzero,
+        min,
+        max
+    );
     print!("First 32: ");
     for &s in frame_samples.iter().take(32) {
         print!("{} ", s);

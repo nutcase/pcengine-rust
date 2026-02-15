@@ -13,8 +13,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     while frames < 3 && total_ticks < 5_000_000 {
         emu.tick();
         total_ticks += 1;
-        if emu.take_frame().is_some() { frames += 1; }
-        if emu.cpu.halted { break; }
+        if emu.take_frame().is_some() {
+            frames += 1;
+        }
+        if emu.cpu.halted {
+            break;
+        }
     }
 
     // Dump code at $FF00-$FFFF (where the crash happens)

@@ -1,11 +1,11 @@
 use pce::emulator::Emulator;
 use sdl2::audio::{AudioQueue, AudioSpecDesired};
 use sdl2::event::Event;
-use sdl2::keyboard::Keycode;
+use sdl2::keyboard::{Keycode, Mod};
 use sdl2::pixels::PixelFormatEnum;
 use sdl2::rect::Rect;
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 const FRAME_WIDTH: usize = 256;
@@ -20,7 +20,6 @@ const AUDIO_QUEUE_CRITICAL: usize = AUDIO_BATCH * 2;
 const MAX_EMU_STEPS_PER_PUMP: usize = 120_000;
 const MAX_STEPS_AFTER_FRAME: usize = 30_000;
 const MAX_PRESENT_INTERVAL: Duration = Duration::from_millis(33);
-
 fn main() -> Result<(), String> {
     let mut args = std::env::args().skip(1);
     let rom_path = args
@@ -96,11 +95,55 @@ fn main() -> Result<(), String> {
                 Event::Quit { .. } => quit = true,
                 Event::KeyDown {
                     keycode: Some(code),
+                    keymod,
                     repeat: false,
                     ..
                 } => {
                     if code == Keycode::Escape {
                         quit = true;
+                    } else if let Some(slot) = state_slot_from_keycode(code) {
+                        let shift_pressed = keymod.intersects(Mod::LSHIFTMOD | Mod::RSHIFTMOD);
+                        let state_path = state_file_path(&rom_path, slot);
+                        if shift_pressed {
+                            if let Some(parent) = state_path.parent() {
+                                if let Err(err) = std::fs::create_dir_all(parent) {
+                                    eprintln!(
+                                        "Failed to create state directory {}: {err}",
+                                        parent.display()
+                                    );
+                                    continue;
+                                }
+                            }
+                            match emulator.save_state_to_file(&state_path) {
+                                Ok(()) => eprintln!(
+                                    "Saved state to slot {} ({})",
+                                    slot,
+                                    state_path.display()
+                                ),
+                                Err(err) => eprintln!("Failed to save slot {}: {err}", slot),
+                            }
+                        } else {
+                            match emulator.load_state_from_file(&state_path) {
+                                Ok(()) => {
+                                    emulator.set_audio_batch_size(EMU_AUDIO_BATCH);
+                                    audio_device.clear();
+                                    latest_frame = None;
+                                    last_present = Instant::now();
+                                    eprintln!(
+                                        "Loaded state from slot {} ({})",
+                                        slot,
+                                        state_path.display()
+                                    );
+                                }
+                                Err(err) => {
+                                    eprintln!(
+                                        "Failed to load slot {} ({}): {err}",
+                                        slot,
+                                        state_path.display()
+                                    );
+                                }
+                            }
+                        }
                     } else {
                         pressed.insert(code);
                     }
@@ -206,14 +249,55 @@ fn build_pad_state(pressed: &HashSet<Keycode>) -> u8 {
     // Active-low bits. Lower nibble = d-pad, upper nibble = buttons.
     let mut clear = |bit: u8| state &= !(1 << bit);
     // D-pad (lower nibble, returned when SEL=1)
-    if pressed.contains(&Keycode::Up) { clear(0); }
-    if pressed.contains(&Keycode::Right) { clear(1); }
-    if pressed.contains(&Keycode::Down) { clear(2); }
-    if pressed.contains(&Keycode::Left) { clear(3); }
+    if pressed.contains(&Keycode::Up) {
+        clear(0);
+    }
+    if pressed.contains(&Keycode::Right) {
+        clear(1);
+    }
+    if pressed.contains(&Keycode::Down) {
+        clear(2);
+    }
+    if pressed.contains(&Keycode::Left) {
+        clear(3);
+    }
     // Buttons (upper nibble, returned when SEL=0)
-    if pressed.contains(&Keycode::Z) { clear(4); }       // I
-    if pressed.contains(&Keycode::X) { clear(5); }       // II
-    if pressed.contains(&Keycode::LShift) || pressed.contains(&Keycode::RShift) { clear(6); } // Select
-    if pressed.contains(&Keycode::Return) { clear(7); }  // Run
+    if pressed.contains(&Keycode::Z) {
+        clear(4);
+    } // I
+    if pressed.contains(&Keycode::X) {
+        clear(5);
+    } // II
+    if pressed.contains(&Keycode::LShift) || pressed.contains(&Keycode::RShift) {
+        clear(6);
+    } // Select
+    if pressed.contains(&Keycode::Return) || pressed.contains(&Keycode::Space) {
+        clear(7);
+    } // Run
     state
+}
+
+fn state_slot_from_keycode(code: Keycode) -> Option<usize> {
+    match code {
+        Keycode::Num0 | Keycode::Kp0 => Some(0),
+        Keycode::Num1 | Keycode::Kp1 => Some(1),
+        Keycode::Num2 | Keycode::Kp2 => Some(2),
+        Keycode::Num3 | Keycode::Kp3 => Some(3),
+        Keycode::Num4 | Keycode::Kp4 => Some(4),
+        Keycode::Num5 | Keycode::Kp5 => Some(5),
+        Keycode::Num6 | Keycode::Kp6 => Some(6),
+        Keycode::Num7 | Keycode::Kp7 => Some(7),
+        Keycode::Num8 | Keycode::Kp8 => Some(8),
+        Keycode::Num9 | Keycode::Kp9 => Some(9),
+        _ => None,
+    }
+}
+
+fn state_file_path(rom_path: &str, slot: usize) -> PathBuf {
+    let stem = Path::new(rom_path)
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or("game");
+    PathBuf::from("states").join(format!("{stem}.slot{slot}.state"))
 }

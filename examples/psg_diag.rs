@@ -22,7 +22,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         if let Some(samples) = emu.take_audio_samples() {
             for &s in &samples {
                 total_samples += 1;
-                if s != 0 { nonzero_samples += 1; }
+                if s != 0 {
+                    nonzero_samples += 1;
+                }
                 sample_rms_sum += (s as f64) * (s as f64);
             }
         }
@@ -43,22 +45,33 @@ fn main() -> Result<(), Box<dyn Error>> {
                     } else {
                         0.0
                     };
-                    println!("  CH{}: freq={:4} ({:7.1}Hz) vol={:2} key={} dda={} bal=${:02X} noise=${:02X}",
-                        ch, freq, freq_hz, volume, key_on, dda, bal, noise);
+                    println!(
+                        "  CH{}: freq={:4} ({:7.1}Hz) vol={:2} key={} dda={} bal=${:02X} noise=${:02X}",
+                        ch, freq, freq_hz, volume, key_on, dda, bal, noise
+                    );
                 }
                 let rms = if total_samples > 0 {
                     (sample_rms_sum / total_samples as f64).sqrt()
                 } else {
                     0.0
                 };
-                println!("  Audio: {} samples, {} nonzero ({:.1}%), RMS={:.1}",
-                    total_samples, nonzero_samples,
-                    if total_samples > 0 { nonzero_samples as f64 / total_samples as f64 * 100.0 } else { 0.0 },
-                    rms);
+                println!(
+                    "  Audio: {} samples, {} nonzero ({:.1}%), RMS={:.1}",
+                    total_samples,
+                    nonzero_samples,
+                    if total_samples > 0 {
+                        nonzero_samples as f64 / total_samples as f64 * 100.0
+                    } else {
+                        0.0
+                    },
+                    rms
+                );
             }
         }
 
-        if emu.cpu.halted { break; }
+        if emu.cpu.halted {
+            break;
+        }
     }
 
     println!("\n=== Final State ({} frames) ===", frames);
@@ -67,16 +80,33 @@ fn main() -> Result<(), Box<dyn Error>> {
         let key_on = ctrl & 0x80 != 0;
         let dda = ctrl & 0x40 != 0;
         let volume = ctrl & 0x1F;
-        let freq_hz = if freq > 0 { 3_579_545.0 / (32.0 * freq as f64) } else { 0.0 };
-        println!("  CH{}: freq={:4} ({:7.1}Hz) ctrl=${:02X} vol={:2} key={:<5} dda={:<5} bal=${:02X} noise=${:02X}",
-            ch, freq, freq_hz, ctrl, volume, key_on, dda, bal, noise);
+        let freq_hz = if freq > 0 {
+            3_579_545.0 / (32.0 * freq as f64)
+        } else {
+            0.0
+        };
+        println!(
+            "  CH{}: freq={:4} ({:7.1}Hz) ctrl=${:02X} vol={:2} key={:<5} dda={:<5} bal=${:02X} noise=${:02X}",
+            ch, freq, freq_hz, ctrl, volume, key_on, dda, bal, noise
+        );
     }
 
-    let rms = if total_samples > 0 { (sample_rms_sum / total_samples as f64).sqrt() } else { 0.0 };
-    println!("\nTotal audio: {} samples, {} nonzero ({:.1}%), RMS={:.1}",
-        total_samples, nonzero_samples,
-        if total_samples > 0 { nonzero_samples as f64 / total_samples as f64 * 100.0 } else { 0.0 },
-        rms);
+    let rms = if total_samples > 0 {
+        (sample_rms_sum / total_samples as f64).sqrt()
+    } else {
+        0.0
+    };
+    println!(
+        "\nTotal audio: {} samples, {} nonzero ({:.1}%), RMS={:.1}",
+        total_samples,
+        nonzero_samples,
+        if total_samples > 0 {
+            nonzero_samples as f64 / total_samples as f64 * 100.0
+        } else {
+            0.0
+        },
+        rms
+    );
 
     Ok(())
 }

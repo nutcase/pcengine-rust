@@ -40,9 +40,12 @@ fn main() -> Result<(), Box<dyn Error>> {
             for i in 0..8 {
                 if new_mpr[i] != prev_mpr[i] {
                     let page = new_mpr[i];
-                    if page < 0xF8 { // Skip RAM/hardware pages
-                        println!("[tick {:6} PC=${:04X}] MPR{}: ${:02X} -> ${:02X} (ROM page {})",
-                            total_ticks, current_pc, i, prev_mpr[i], page, page);
+                    if page < 0xF8 {
+                        // Skip RAM/hardware pages
+                        println!(
+                            "[tick {:6} PC=${:04X}] MPR{}: ${:02X} -> ${:02X} (ROM page {})",
+                            total_ticks, current_pc, i, prev_mpr[i], page, page
+                        );
                     }
                 }
             }
@@ -54,11 +57,21 @@ fn main() -> Result<(), Box<dyn Error>> {
             first_io_exec = true;
             println!("\n!!! CPU executing from IO page!");
             println!("  tick: {}", total_ticks);
-            println!("  previous PC: ${:04X} (opcode ${:02X})", current_pc, current_opcode);
+            println!(
+                "  previous PC: ${:04X} (opcode ${:02X})",
+                current_pc, current_opcode
+            );
             println!("  new PC: ${:04X}", new_pc);
-            println!("  Status: ${:02X} (I={})", emu.cpu.status, emu.cpu.status & 0x04 != 0);
+            println!(
+                "  Status: ${:02X} (I={})",
+                emu.cpu.status,
+                emu.cpu.status & 0x04 != 0
+            );
             println!("  SP: ${:02X}", emu.cpu.sp);
-            println!("  A=${:02X} X=${:02X} Y=${:02X}", emu.cpu.a, emu.cpu.x, emu.cpu.y);
+            println!(
+                "  A=${:02X} X=${:02X} Y=${:02X}",
+                emu.cpu.a, emu.cpu.x, emu.cpu.y
+            );
 
             // Dump stack
             print!("  Stack:");
@@ -70,9 +83,16 @@ fn main() -> Result<(), Box<dyn Error>> {
 
             // Show the last 20 call trace entries
             println!("\n  Last 20 PC transitions before IO exec:");
-            let start = if call_trace.len() > 20 { call_trace.len() - 20 } else { 0 };
+            let start = if call_trace.len() > 20 {
+                call_trace.len() - 20
+            } else {
+                0
+            };
             for &(tick, from, to, kind) in &call_trace[start..] {
-                println!("    [tick {:6}] ${:04X} → ${:04X} ({})", tick, from, to, kind);
+                println!(
+                    "    [tick {:6}] ${:04X} → ${:04X} ({})",
+                    tick, from, to, kind
+                );
             }
         }
 
@@ -88,9 +108,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                 0x60 => "RTS",
                 0x40 => "RTI",
                 0x00 => "BRK",
-                0x10 | 0x30 | 0x50 | 0x70 | 0x90 | 0xB0 | 0xD0 | 0xF0 | 0x80 | 0x0F
-                | 0x1F | 0x2F | 0x3F | 0x4F | 0x5F | 0x6F | 0x7F | 0x8F | 0x9F
-                | 0xAF | 0xBF | 0xCF | 0xDF | 0xEF | 0xFF => "Bxx",
+                0x10 | 0x30 | 0x50 | 0x70 | 0x90 | 0xB0 | 0xD0 | 0xF0 | 0x80 | 0x0F | 0x1F
+                | 0x2F | 0x3F | 0x4F | 0x5F | 0x6F | 0x7F | 0x8F | 0x9F | 0xAF | 0xBF | 0xCF
+                | 0xDF | 0xEF | 0xFF => "Bxx",
                 0x44 | 0x54 => "BSR",
                 _ => "???",
             };
@@ -108,7 +128,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             println!("=== Frame {} at tick {} ===", frames, total_ticks);
         }
 
-        if emu.cpu.halted { break; }
+        if emu.cpu.halted {
+            break;
+        }
     }
 
     // Summary
@@ -118,8 +140,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         for i in 0..8 {
             if mpr[i] >= 64 && mpr[i] < 0xF8 {
                 high_page_used = true;
-                println!("  [tick {:6} PC=${:04X}] MPR{} = ${:02X} (page {})",
-                    tick, pc, i, mpr[i], mpr[i]);
+                println!(
+                    "  [tick {:6} PC=${:04X}] MPR{} = ${:02X} (page {})",
+                    tick, pc, i, mpr[i], mpr[i]
+                );
             }
         }
     }

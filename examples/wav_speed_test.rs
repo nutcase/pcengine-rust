@@ -44,10 +44,16 @@ fn main() -> Result<(), Box<dyn Error>> {
         if emu.take_frame().is_some() {
             frames += 1;
         }
-        if emu.cpu.halted { break; }
+        if emu.cpu.halted {
+            break;
+        }
     }
 
-    println!("Generated {} samples ({:.2}s at 44100 Hz)", all_samples.len(), all_samples.len() as f64 / 44100.0);
+    println!(
+        "Generated {} samples ({:.2}s at 44100 Hz)",
+        all_samples.len(),
+        all_samples.len() as f64 / 44100.0
+    );
 
     // Normal speed (44100 Hz)
     write_wav("kk_1x.wav", &all_samples, 44100)?;

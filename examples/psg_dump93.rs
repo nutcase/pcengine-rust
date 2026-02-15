@@ -13,8 +13,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     while frames < 400 && total_ticks < 100_000_000 {
         emu.tick();
         total_ticks += 1;
-        if emu.take_frame().is_some() { frames += 1; }
-        if emu.cpu.halted { break; }
+        if emu.take_frame().is_some() {
+            frames += 1;
+        }
+        if emu.cpu.halted {
+            break;
+        }
     }
 
     println!("=== PSG State at frame {} ===\n", frames);
@@ -34,8 +38,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             3_579_545.0 / (32.0 * freq as f64)
         };
 
-        println!("CH{}: freq=${:03X}({:.1}Hz) vol={} key={} dda={} bal=${:02X} noise={}/freq={}",
-            ch, freq, hz, volume, key_on, dda, balance, noise_en, noise_freq);
+        println!(
+            "CH{}: freq=${:03X}({:.1}Hz) vol={} key={} dda={} bal=${:02X} noise={}/freq={}",
+            ch, freq, hz, volume, key_on, dda, balance, noise_en, noise_freq
+        );
     }
 
     // Dump waveform RAM via reading PSG direct registers
@@ -57,15 +63,20 @@ fn main() -> Result<(), Box<dyn Error>> {
                 frame_samples.push(s);
             }
         }
-        if frame_samples.len() >= samples_per_frame * 2 { break; }
-        if emu.cpu.halted { break; }
+        if frame_samples.len() >= samples_per_frame * 2 {
+            break;
+        }
+        if emu.cpu.halted {
+            break;
+        }
     }
 
     // Analyze the audio
     let samples = &frame_samples[..samples_per_frame.min(frame_samples.len())];
     let min = samples.iter().copied().min().unwrap_or(0);
     let max = samples.iter().copied().max().unwrap_or(0);
-    let rms: f64 = (samples.iter().map(|&s| (s as f64).powi(2)).sum::<f64>() / samples.len() as f64).sqrt();
+    let rms: f64 =
+        (samples.iter().map(|&s| (s as f64).powi(2)).sum::<f64>() / samples.len() as f64).sqrt();
 
     println!("Samples: {}", samples.len());
     println!("Min: {}, Max: {}", min, max);
@@ -75,17 +86,23 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Count zero crossings (rough frequency estimate)
     let mut zero_crossings = 0;
     for i in 1..samples.len() {
-        if (samples[i] >= 0) != (samples[i-1] >= 0) {
+        if (samples[i] >= 0) != (samples[i - 1] >= 0) {
             zero_crossings += 1;
         }
     }
-    println!("Zero crossings: {} (~{:.0} Hz)", zero_crossings, zero_crossings as f64 / 2.0 * 60.0);
+    println!(
+        "Zero crossings: {} (~{:.0} Hz)",
+        zero_crossings,
+        zero_crossings as f64 / 2.0 * 60.0
+    );
 
     // Print first 64 samples
     println!("\nFirst 64 samples:");
     for (i, &s) in samples.iter().take(64).enumerate() {
         print!("{:6}", s);
-        if (i + 1) % 16 == 0 { println!(); }
+        if (i + 1) % 16 == 0 {
+            println!();
+        }
     }
 
     // Look for repeating patterns (basic period detection)
@@ -116,14 +133,21 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
         }
     }
-    let detected_freq = if best_lag > 0 { 44100.0 / best_lag as f64 } else { 0.0 };
-    println!("Best autocorrelation: lag={} ({:.1} Hz), correlation={:.3}", best_lag, detected_freq, best_corr);
+    let detected_freq = if best_lag > 0 {
+        44100.0 / best_lag as f64
+    } else {
+        0.0
+    };
+    println!(
+        "Best autocorrelation: lag={} ({:.1} Hz), correlation={:.3}",
+        best_lag, detected_freq, best_corr
+    );
 
     // Look for rapid sample-to-sample changes (noise indicator)
     let mut big_jumps = 0;
     let mut total_diff = 0i64;
     for i in 1..samples.len() {
-        let diff = (samples[i] as i32 - samples[i-1] as i32).unsigned_abs();
+        let diff = (samples[i] as i32 - samples[i - 1] as i32).unsigned_abs();
         total_diff += diff as i64;
         if diff > 5000 {
             big_jumps += 1;

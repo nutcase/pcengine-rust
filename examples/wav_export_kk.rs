@@ -24,11 +24,18 @@ fn main() -> Result<(), Box<dyn Error>> {
         if emu.take_frame().is_some() {
             frames += 1;
         }
-        if emu.cpu.halted { break; }
+        if emu.cpu.halted {
+            break;
+        }
     }
 
     println!("Frames: {}", frames);
-    println!("Samples: {} ({:.3}s at {} Hz)", all_samples.len(), all_samples.len() as f64 / sample_rate as f64, sample_rate);
+    println!(
+        "Samples: {} ({:.3}s at {} Hz)",
+        all_samples.len(),
+        all_samples.len() as f64 / sample_rate as f64,
+        sample_rate
+    );
 
     // Write WAV
     let filename = "kk_audio.wav";
@@ -57,7 +64,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut rms_values: Vec<f64> = Vec::new();
     for i in (0..all_samples.len()).step_by(window) {
         let end = (i + window).min(all_samples.len());
-        let rms: f64 = (all_samples[i..end].iter().map(|&s| (s as f64) * (s as f64)).sum::<f64>() / (end - i) as f64).sqrt();
+        let rms: f64 = (all_samples[i..end]
+            .iter()
+            .map(|&s| (s as f64) * (s as f64))
+            .sum::<f64>()
+            / (end - i) as f64)
+            .sqrt();
         rms_values.push(rms);
     }
 
@@ -66,11 +78,16 @@ fn main() -> Result<(), Box<dyn Error>> {
     for sec_10th in 0..50 {
         let start_idx = sec_10th * 10;
         let end_idx = ((sec_10th + 1) * 10).min(rms_values.len());
-        if start_idx >= rms_values.len() { break; }
-        let avg: f64 = rms_values[start_idx..end_idx].iter().sum::<f64>() / (end_idx - start_idx) as f64;
+        if start_idx >= rms_values.len() {
+            break;
+        }
+        let avg: f64 =
+            rms_values[start_idx..end_idx].iter().sum::<f64>() / (end_idx - start_idx) as f64;
         let time = sec_10th as f64 * 0.1;
         print!("{:.1}s:{:.0} ", time, avg);
-        if (sec_10th + 1) % 10 == 0 { println!(); }
+        if (sec_10th + 1) % 10 == 0 {
+            println!();
+        }
     }
     println!();
 

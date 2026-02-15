@@ -1,0 +1,4 @@
+[env]
+# CMake 4.x dropped compatibility defaults for projects with very old
+# cmake_minimum_required(). sdl2-sys (bundled SDL) needs this policy floor.
+CMAKE_POLICY_VERSION_MINIMUM = "3.5"

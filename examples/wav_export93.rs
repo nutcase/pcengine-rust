@@ -26,10 +26,18 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         if let Some(samples) = emu.take_audio_samples() {
             for &s in &samples {
-                if s < min_sample { min_sample = s; }
-                if s > max_sample { max_sample = s; }
-                if s == 0 { zero_count += 1; }
-                if s == i16::MIN || s == i16::MAX { clip_count += 1; }
+                if s < min_sample {
+                    min_sample = s;
+                }
+                if s > max_sample {
+                    max_sample = s;
+                }
+                if s == 0 {
+                    zero_count += 1;
+                }
+                if s == i16::MIN || s == i16::MAX {
+                    clip_count += 1;
+                }
                 all_samples.push(s);
             }
         }
@@ -37,7 +45,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         if emu.take_frame().is_some() {
             frames += 1;
         }
-        if emu.cpu.halted { break; }
+        if emu.cpu.halted {
+            break;
+        }
     }
 
     let num_samples = all_samples.len() as u32;
@@ -45,11 +55,32 @@ fn main() -> Result<(), Box<dyn Error>> {
     eprintln!("=== WAV Export Summary ===");
     eprintln!("Frames: {}", frames);
     eprintln!("Total ticks: {}", total_ticks);
-    eprintln!("Samples: {} ({:.3}s at {} Hz)", num_samples, duration_secs, SAMPLE_RATE);
-    eprintln!("Expected: {:.3}s for {} frames at 60 Hz", frames as f64 / 60.0, frames);
-    eprintln!("Sample range: {} to {} (i16: {} to {})", min_sample, max_sample, i16::MIN, i16::MAX);
-    eprintln!("Zero samples: {} ({:.1}%)", zero_count, zero_count as f64 / num_samples as f64 * 100.0);
-    eprintln!("Clipped samples: {} ({:.1}%)", clip_count, clip_count as f64 / num_samples as f64 * 100.0);
+    eprintln!(
+        "Samples: {} ({:.3}s at {} Hz)",
+        num_samples, duration_secs, SAMPLE_RATE
+    );
+    eprintln!(
+        "Expected: {:.3}s for {} frames at 60 Hz",
+        frames as f64 / 60.0,
+        frames
+    );
+    eprintln!(
+        "Sample range: {} to {} (i16: {} to {})",
+        min_sample,
+        max_sample,
+        i16::MIN,
+        i16::MAX
+    );
+    eprintln!(
+        "Zero samples: {} ({:.1}%)",
+        zero_count,
+        zero_count as f64 / num_samples as f64 * 100.0
+    );
+    eprintln!(
+        "Clipped samples: {} ({:.1}%)",
+        clip_count,
+        clip_count as f64 / num_samples as f64 * 100.0
+    );
 
     // Analyze first few seconds for silence
     let samples_per_frame = (SAMPLE_RATE as f64 / 60.0) as usize; // ~735
@@ -57,14 +88,20 @@ fn main() -> Result<(), Box<dyn Error>> {
     for f in 0..frames.min(300) as usize {
         let start = f * samples_per_frame;
         let end = (start + samples_per_frame).min(all_samples.len());
-        if start >= all_samples.len() { break; }
+        if start >= all_samples.len() {
+            break;
+        }
         let chunk = &all_samples[start..end];
         let max_abs = chunk.iter().map(|s| s.unsigned_abs()).max().unwrap_or(0);
         if max_abs < 100 {
             silent_frames += 1;
         }
     }
-    eprintln!("Silent frames (first 300): {} ({:.1}%)", silent_frames, silent_frames as f64 / 300.0 * 100.0);
+    eprintln!(
+        "Silent frames (first 300): {} ({:.1}%)",
+        silent_frames,
+        silent_frames as f64 / 300.0 * 100.0
+    );
 
     // RMS analysis by sections
     let section_size = SAMPLE_RATE as usize; // 1 second
@@ -72,9 +109,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     for sec in 0..(num_samples as usize / section_size).min(10) {
         let start = sec * section_size;
         let end = start + section_size;
-        let rms: f64 = (all_samples[start..end].iter()
+        let rms: f64 = (all_samples[start..end]
+            .iter()
             .map(|&s| (s as f64) * (s as f64))
-            .sum::<f64>() / section_size as f64)
+            .sum::<f64>()
+            / section_size as f64)
             .sqrt();
         eprintln!("  Second {}: RMS={:.1}", sec, rms);
     }

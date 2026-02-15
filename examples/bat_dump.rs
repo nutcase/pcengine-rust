@@ -1,111 +1,105 @@
+/// Dump BAT and tile data for the visible area.
 use pce::emulator::Emulator;
 use std::error::Error;
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let rom = std::fs::read("roms/Kato-chan & Ken-chan (Japan).pce")?;
+    let rom_path = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "roms/Kato-chan & Ken-chan (Japan).pce".to_string());
+    let rom = std::fs::read(&rom_path)?;
     let mut emu = Emulator::new();
     emu.load_hucard(&rom)?;
     emu.reset();
 
-    let mut frames = 0;
-    while frames < 150 {
+    let mut frames = 0u64;
+    while frames < 2000 {
         emu.tick();
-        if let Some(_) = emu.take_frame() {
+        if let Some(_f) = emu.take_frame() {
             frames += 1;
-        }
-    }
-
-    let (map_w, map_h) = emu.bus.vdc_map_dimensions();
-    let byr = emu.bus.vdc_register(0x08).unwrap_or(0) as usize;
-    println!("Map: {}x{}, BYR={}", map_w, map_h, byr);
-
-    // With BYR=51 and 224 active lines, visible sample_y range: 51 to 274
-    // Title rows 0-34 (sample_y 0-279) cover the visible range
-    println!("\nBAT rows 0-35 (flat addressing, first 32 cols):");
-    for bat_row in 0..36 {
-        let sample_y_start = bat_row * 8;
-        let sample_y_end = sample_y_start + 7;
-        let active_row_start = if sample_y_start >= byr {
-            sample_y_start - byr
-        } else {
-            999
-        };
-        let visible = sample_y_start >= byr && sample_y_start < byr + 224;
-
-        // Count non-zero and non-0x0200 tiles
-        let mut nonzero = 0;
-        let mut special = 0;
-        let mut first_nonzero_tile = 0u16;
-        let mut first_pal = 0u16;
-        for col in 0..32 {
-            let addr = bat_row * map_w + col;
-            let entry = emu.bus.vdc_vram_word(addr as u16);
-            if entry != 0 && entry != 0x0200 {
-                if nonzero == 0 {
-                    first_nonzero_tile = entry & 0x7FF;
-                    first_pal = (entry >> 12) & 0xF;
-                }
-                nonzero += 1;
-            }
-            if entry == 0x0200 {
-                special += 1;
-            }
-        }
-        if nonzero > 0 || visible {
-            print!(
-                "  row {:2} (sy {:3}-{:3})",
-                bat_row, sample_y_start, sample_y_end
+            let press_run = matches!(frames,
+                100..=110 | 200..=210 | 300..=310 | 400..=410 |
+                500..=510 | 600..=610 | 700..=710 | 800..=810
             );
-            if visible {
-                print!(" [VIS ar{:3}]", active_row_start);
+            if press_run {
+                emu.bus.set_joypad_input(0x7F);
             } else {
-                print!(" [      ]");
+                emu.bus.set_joypad_input(0xFF);
             }
-            print!(" non200={:2} bg200={:2}", nonzero, special);
-            if nonzero > 0 {
-                print!(" first=tile{:03X}p{}", first_nonzero_tile, first_pal);
-            }
-
-            // Show actual tiles for key rows
-            if nonzero > 0 && nonzero <= 20 {
-                print!(" |");
-                for col in 0..32 {
-                    let addr = bat_row * map_w + col;
-                    let entry = emu.bus.vdc_vram_word(addr as u16);
-                    let tile = entry & 0x7FF;
-                    let pal = (entry >> 12) & 0xF;
-                    if entry != 0 && entry != 0x0200 {
-                        print!(" {:03X}p{}", tile, pal);
-                    }
-                }
-            }
-            println!();
+        }
+        if emu.cpu.halted {
+            break;
         }
     }
 
-    // Also check what visible lines map to
-    println!("\nActive line summary with BYR={}:", byr);
-    println!("  active_row   0: sample_y={}, tile_row={}", byr, byr / 8);
-    println!(
-        "  active_row  28: sample_y={}, tile_row={}",
-        byr + 28,
-        (byr + 28) / 8
-    );
-    println!(
-        "  active_row  29: sample_y={}, tile_row={}",
-        byr + 29,
-        (byr + 29) / 8
-    );
-    println!(
-        "  active_row 100: sample_y={}, tile_row={}",
-        byr + 100,
-        (byr + 100) / 8
-    );
-    println!(
-        "  active_row 223: sample_y={}, tile_row={}",
-        byr + 223,
-        (byr + 223) / 8
-    );
+    let bxr = emu.bus.vdc_register(0x07).unwrap_or(0);
+    let byr = emu.bus.vdc_register(0x08).unwrap_or(0);
+    let (map_w, map_h) = emu.bus.vdc_map_dimensions();
+    println!("Scroll: BXR={} BYR={} Map={}x{}", bxr, byr, map_w, map_h);
 
+    let start_tile_x = (bxr as usize) / 8;
+    let start_tile_y = (byr as usize) / 8;
+
+    println!("\n=== BAT entries (visible) ===");
+    for ty in 0..12 {
+        let bat_row = (start_tile_y + ty) % map_h;
+        print!("R{:02}: ", bat_row);
+        for tx in 0..33 {
+            let bat_col = (start_tile_x + tx) % map_w;
+            let bat_addr = bat_row * map_w + bat_col;
+            let entry = emu.bus.vdc_vram_word(bat_addr as u16);
+            let tile_id = entry & 0x07FF;
+            let pal = (entry >> 12) & 0x0F;
+            print!("{:03X}{} ", tile_id, pal);
+        }
+        println!();
+    }
+
+    // Dump unique tile patterns in sky area
+    println!("\n=== Unique tiles in sky ===");
+    let mut seen = std::collections::HashSet::new();
+    for ty in 0..6 {
+        let bat_row = (start_tile_y + ty) % map_h;
+        for tx in 0..33 {
+            let bat_col = (start_tile_x + tx) % map_w;
+            let bat_addr = bat_row * map_w + bat_col;
+            let entry = emu.bus.vdc_vram_word(bat_addr as u16);
+            let tile_id = (entry & 0x07FF) as usize;
+            if seen.contains(&tile_id) {
+                continue;
+            }
+            seen.insert(tile_id);
+            let tile_base = tile_id * 16;
+            println!("Tile {:03X}:", tile_id);
+            for row in 0..8 {
+                let chr_a = emu.bus.vdc_vram_word((tile_base + row) as u16);
+                let chr_b = emu.bus.vdc_vram_word((tile_base + 8 + row) as u16);
+                print!("  R{}: ", row);
+                for col in 0..8 {
+                    let shift = 7 - col;
+                    let p0 = ((chr_a >> shift) & 1) as u8;
+                    let p1 = ((chr_a >> (shift + 8)) & 1) as u8;
+                    let p2 = ((chr_b >> shift) & 1) as u8;
+                    let p3 = ((chr_b >> (shift + 8)) & 1) as u8;
+                    print!("{:X}", p0 | (p1 << 1) | (p2 << 2) | (p3 << 3));
+                }
+                println!();
+            }
+        }
+    }
+
+    // Palette
+    println!("\n=== BG palettes 0-5 ===");
+    for bank in 0..6 {
+        for i in 0..16 {
+            let idx = bank * 16 + i;
+            let rgb = emu.bus.vce_palette_rgb(idx);
+            let r = (rgb >> 16) & 0xFF;
+            let g = (rgb >> 8) & 0xFF;
+            let b = rgb & 0xFF;
+            if r != 0 || g != 0 || b != 0 {
+                println!("  [{:03X}] = ({:3},{:3},{:3})", idx, r, g, b);
+            }
+        }
+    }
     Ok(())
 }

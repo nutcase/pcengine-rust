@@ -59,9 +59,17 @@ fn main() -> Result<(), Box<dyn Error>> {
             if !driver_code_dumped && driver_call_count == 1 {
                 driver_code_dumped = true;
                 println!("=== Sound driver code at $D094 ===");
-                println!("MPR: {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}",
-                    mpr_at_driver[0], mpr_at_driver[1], mpr_at_driver[2], mpr_at_driver[3],
-                    mpr_at_driver[4], mpr_at_driver[5], mpr_at_driver[6], mpr_at_driver[7]);
+                println!(
+                    "MPR: {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}",
+                    mpr_at_driver[0],
+                    mpr_at_driver[1],
+                    mpr_at_driver[2],
+                    mpr_at_driver[3],
+                    mpr_at_driver[4],
+                    mpr_at_driver[5],
+                    mpr_at_driver[6],
+                    mpr_at_driver[7]
+                );
                 print!("Code bytes: ");
                 for offset in 0..64 {
                     let byte = emu.bus.read(0xD094 + offset);
@@ -72,10 +80,21 @@ fn main() -> Result<(), Box<dyn Error>> {
 
             // Log first 5 driver calls with ZP state
             if driver_call_count <= 5 {
-                println!("\n--- Driver call #{} at frame {} tick {} ---", driver_call_count, frames, total_ticks);
-                println!("MPR: {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}",
-                    mpr_at_driver[0], mpr_at_driver[1], mpr_at_driver[2], mpr_at_driver[3],
-                    mpr_at_driver[4], mpr_at_driver[5], mpr_at_driver[6], mpr_at_driver[7]);
+                println!(
+                    "\n--- Driver call #{} at frame {} tick {} ---",
+                    driver_call_count, frames, total_ticks
+                );
+                println!(
+                    "MPR: {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}",
+                    mpr_at_driver[0],
+                    mpr_at_driver[1],
+                    mpr_at_driver[2],
+                    mpr_at_driver[3],
+                    mpr_at_driver[4],
+                    mpr_at_driver[5],
+                    mpr_at_driver[6],
+                    mpr_at_driver[7]
+                );
 
                 // Dump interesting ZP ranges (potential tempo counters)
                 print!("ZP $00-$1F: ");
@@ -116,34 +135,50 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
         }
 
-        if emu.cpu.halted { break; }
+        if emu.cpu.halted {
+            break;
+        }
     }
 
     // Report frequency change timeline
     println!("\n=== Frequency change timeline (frames 290-400) ===");
     for &(frame, ch, old_f, new_f) in &freq_change_frames {
         if frame >= 290 {
-            let old_hz = if old_f > 0 { 3_579_545.0 / (32.0 * old_f as f64) } else { 0.0 };
-            let new_hz = if new_f > 0 { 3_579_545.0 / (32.0 * new_f as f64) } else { 0.0 };
-            println!("  Frame {:4}: CH{} freq {:4} ({:7.1}Hz) -> {:4} ({:7.1}Hz)",
-                frame, ch, old_f, old_hz, new_f, new_hz);
+            let old_hz = if old_f > 0 {
+                3_579_545.0 / (32.0 * old_f as f64)
+            } else {
+                0.0
+            };
+            let new_hz = if new_f > 0 {
+                3_579_545.0 / (32.0 * new_f as f64)
+            } else {
+                0.0
+            };
+            println!(
+                "  Frame {:4}: CH{} freq {:4} ({:7.1}Hz) -> {:4} ({:7.1}Hz)",
+                frame, ch, old_f, old_hz, new_f, new_hz
+            );
         }
     }
 
     // Find frequency change intervals for each channel
     println!("\n=== Note change intervals per channel (frames >= 300) ===");
     for ch in 0..6 {
-        let changes: Vec<u64> = freq_change_frames.iter()
+        let changes: Vec<u64> = freq_change_frames
+            .iter()
             .filter(|&&(f, c, _, _)| c == ch && f >= 300)
             .map(|&(f, _, _, _)| f)
             .collect();
         if changes.len() >= 2 {
-            let intervals: Vec<u64> = changes.windows(2)
-                .map(|w| w[1] - w[0])
-                .collect();
+            let intervals: Vec<u64> = changes.windows(2).map(|w| w[1] - w[0]).collect();
             let avg = intervals.iter().sum::<u64>() as f64 / intervals.len() as f64;
-            println!("  CH{}: {} changes, avg interval = {:.1} frames ({:.1} Hz)",
-                ch, changes.len(), avg, 60.0 / avg);
+            println!(
+                "  CH{}: {} changes, avg interval = {:.1} frames ({:.1} Hz)",
+                ch,
+                changes.len(),
+                avg,
+                60.0 / avg
+            );
             if intervals.len() <= 20 {
                 println!("    Intervals: {:?}", intervals);
             } else {
@@ -155,8 +190,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     // Report most-changed ZP locations
-    println!("\n=== ZP locations that change between driver calls ({} calls) ===", driver_call_count);
-    let mut zp_sorted: Vec<(usize, u32)> = zp_change_count.iter()
+    println!(
+        "\n=== ZP locations that change between driver calls ({} calls) ===",
+        driver_call_count
+    );
+    let mut zp_sorted: Vec<(usize, u32)> = zp_change_count
+        .iter()
         .enumerate()
         .filter(|&(_, &count)| count > 0)
         .map(|(addr, &count)| (addr, count))
@@ -164,8 +203,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     zp_sorted.sort_by(|a, b| b.1.cmp(&a.1));
     for &(addr, count) in zp_sorted.iter().take(30) {
         let rate = count as f64 / driver_call_count as f64;
-        println!("  ZP ${:02X}: changed {} times ({:.1}% of calls), current = ${:02X}",
-            addr, count, rate * 100.0, emu.bus.read_zero_page(addr as u8));
+        println!(
+            "  ZP ${:02X}: changed {} times ({:.1}% of calls), current = ${:02X}",
+            addr,
+            count,
+            rate * 100.0,
+            emu.bus.read_zero_page(addr as u8)
+        );
     }
 
     // Dump RAM at likely sound driver work area

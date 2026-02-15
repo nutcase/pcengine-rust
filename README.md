@@ -1,51 +1,75 @@
 # PC Engine Emulator (Rust)
 
-This project implements the core scaffolding for a PC Engine (HuC6280) emulator in Rust. It focuses on building confidence in the CPU pipeline, banking model, and developer ergonomics for rapid experimentation.
+Rust implementation of a PC Engine / TurboGrafx-16 emulator (HuC6280 + HuC6270 + HuC6260 + PSG path).
 
-## Features
-- Bank-aware 64 KiB memory window with configurable 8 KiB pages backing RAM or ROM data.
-- HuC6280 CPU core covering loads/stores, arithmetic/logic, branches, block transfers (`TII/TIN/TDD/TIA/TAI`), memory page register moves (`TMA/TAM`), register swaps (`SAX/SAY/SXY`), stack/flag control (`CLA/CLX/CLY`, `SET`, `CSH/CSL`, `BSR`), and the ST0/1/2 VDC immediates.
-- MPR bank switching implemented at `$FF80`-`$FF87`, with a simple I/O page backing for `$FF`-mapped segments (sufficient for early device stubbing).
-- Interrupt handling with `WAI`/`RTI`, per-source vector selection (IRQ2/IRQ1/TIMER/NMI), and stack push/pull semantics.
-- Early VDC renderer that draws background tile maps and SATB-driven sprites (with basic priority handling) into a software framebuffer.
-- HuC6270 DMA paths (VRAM↔VRAM, SATB auto-transfer, CRAM palette DMA) with busy/status flag updates that match the DS/DV handshake BIOS routines expect.
-- Execution loop that runs until a `BRK` instruction or a cycle budget is hit.
-- Unit tests exercising CPU arithmetic, branching, bank switching, and the top-level emulator workflow.
+Current focus is correctness-first bring-up using `roms/Kato-chan & Ken-chan (Japan).pce`, with SDL preview tooling for rapid iteration.
 
-## Usage
+## Implemented
+- HuC6280 core with broad opcode coverage, interrupts (`IRQ1/IRQ2/TIMER/NMI`), `WAI/RTI`, block transfer instructions, and MPR banking.
+- Hardware page decoding for VDC/VCE/PSG/timer/IRQ on `$FF` mapped I/O segments.
+- HuC6270 VDC background + sprite rendering pipeline, per-line control latching, scroll/zoom handling, SATB, and DMA status behaviour.
+- HuC6260 VCE palette register path with indexed access and RGB conversion.
+- HuC6280 PSG register model and sample generation path, plus SDL audio playback examples.
+- HuCard loader (`.pce`) with optional header handling and initial bank mapping.
+- Backup RAM load/save flow for HuCard runs.
+
+## Quick Start
+Preferred launcher:
+```bash
+./run.sh
+./run.sh "roms/Kato-chan & Ken-chan (Japan).pce"
+./run.sh --debug "roms/Kato-chan & Ken-chan (Japan).pce"
 ```
+
+Direct CLI:
+```bash
+cargo run -- roms/<game>.pce
 cargo run -- path/to/program.bin
 ```
 
-For HuCard images:
-```
-cargo run -- path/to/card.pce
-```
-
-Optional flags:
-```
-cargo run -- path/to/card.pce --load-backup saves/card.sav --save-backup saves/card.sav --frame-limit 2
+Useful options:
+```bash
+cargo run -- roms/<game>.pce --load-backup saves/game.sav --save-backup saves/game.sav --frame-limit 2
 ```
 
-`--load-backup` preloads HuCard backup RAM before reset, `--save-backup` writes the current RAM image after execution (no effect for raw `.bin` programs), and `--frame-limit <n>` runs only until `n` frames have been produced. When omitted, HuCards automatically load/save `path/to/card.sav` alongside the ROM if the file exists. Programs are loaded at `$C000` by default. Break out of execution with a `BRK` (opcode `0x00`).
+- `.bin` programs load at `$C000`.
+- `.pce` HuCards auto-load/save `ROM_NAME.sav` unless explicitly overridden.
 
-HuCard images (`.pce`) have their optional 512-byte headers removed automatically, and the upper four MPR slots (4–7) are mapped to the highest ROM banks so the reset vector and startup code are available immediately; if those banks are blank, the loader falls back to the default sequential bank layout.
+## SDL Front-Ends
+```bash
+cargo run --example video_sdl --features video-sdl -- roms/<game>.pce
+cargo run --example audio_sdl --features audio-sdl -- roms/<game>.pce
+```
 
-To experiment with ROM banking in code, call `Bus::load_rom_image` followed by `Bus::map_bank_to_rom`/`map_bank_to_ram` before issuing `emulator.reset()`.
+Controls in `video_sdl`:
+- D-pad: arrow keys
+- Button I / II: `Z` / `X`
+- Select: `Shift`
+- Run: `Enter` or `Space`
+- Save state: `Shift + 0..9`
+- Load state: `0..9`
+- Quit: `Esc`
 
-### Examples
+State files are persisted under `states/<rom_name>.slotN.state`.
 
-- `cargo run --example trace_boot roms/sample_game.pce` — trace CPU execution and print bus state.
-- `cargo run --example dump_frame roms/sample_game.pce` — dump the next rendered frame into `frame.ppm` for quick inspection.
-- `cargo run --example audio_sdl --features audio-sdl -- roms/sample_game.pce` — play PSG audio output in real time.
-- `cargo run --example video_sdl --features video-sdl roms/sample_game.pce` — open an SDL window and stream frames in real time.
-  Controls: arrows move the D-pad, `Z`/`X` map to buttons I/II, `Enter` is Select, and `Space` is Run.
-  Sprite priority handling and DMA-driven palette uploads mirror the HuC6270 behaviour so BIOS startup code can rely on SATB/CRAM transfers completing automatically.
+## Build Notes
+- `sdl2` is built with the `bundled` feature.
+- This repo includes `.cargo/config.toml` with:
+  - `CMAKE_POLICY_VERSION_MINIMUM=3.5`
+- That setting is required for newer CMake versions that reject old policy defaults used by `sdl2-sys`.
 
-## Next Steps
-- Validate HuC6280 cycle timing against diagnostic ROMs.
-- Model the VDC, PSG, timers, and I/O registers via pluggable bus devices.
-- Add ROM loaders for `.pce` images with header parsing and automatic bank setup.
-- Integrate rendering and audio back-ends for a complete user-facing emulator.
+## Development Commands
+```bash
+cargo fmt
+cargo clippy --all-targets --all-features -D warnings
+cargo test
+cargo run --example dump_frame -- roms/<game>.pce
+cargo run --example trace_boot -- roms/<game>.pce
+```
 
-Refer to `TODO.md` for the live roadmap toward booting `roms/Kato-chan & Ken-chan (Japan).pce`, including CPU work, device modelling, and front-end integration milestones.
+## Known Limitations
+- Audio timing/mixing is still being tuned; BGM tempo stability and residual noise are under active investigation.
+- Some VDC edge cases (exact per-line behaviour and game-specific quirks) are still being refined.
+- CD-ROM subsystem, debugger UI, and save states are not implemented yet.
+
+See `TODO.md` for the detailed roadmap and current priorities.

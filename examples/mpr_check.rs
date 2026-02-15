@@ -31,7 +31,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 for i in 0..8 {
                     println!("  MPR[{}] = ${:02X}", i, emu.bus.mpr(i));
                 }
-                
+
                 // Read VDC status through direct I/O vs through $0000
                 let vdc_io = emu.bus.read_io(0x00);
                 let mem_0000 = emu.bus.read(0x0000);
@@ -41,7 +41,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                 break;
             }
         }
-        if emu.cpu.halted { break; }
+        if emu.cpu.halted {
+            break;
+        }
     }
 
     Ok(())

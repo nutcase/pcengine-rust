@@ -41,22 +41,50 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let expected_samples_per_frame = 44100.0 / 60.0;
     let expected_total = expected_samples_per_frame * frames as f64;
-    let actual_per_frame = if frames > 0 { total_audio_samples as f64 / frames as f64 } else { 0.0 };
+    let actual_per_frame = if frames > 0 {
+        total_audio_samples as f64 / frames as f64
+    } else {
+        0.0
+    };
 
     println!("=== Audio Timing Diagnostic ===");
     println!("Frames rendered: {}", frames);
     println!("Total ticks (emu.tick() calls): {}", total_ticks);
     println!("Total audio samples: {}", total_audio_samples);
-    println!("Samples per frame: {:.2} (expected ~{:.2})", actual_per_frame, expected_samples_per_frame);
-    println!("Expected total for {} frames: {:.0}", frames, expected_total);
-    println!("Ratio actual/expected: {:.4}", total_audio_samples as f64 / expected_total);
-    println!("Playback duration at 44100Hz: {:.3} sec", total_audio_samples as f64 / 44100.0);
-    println!("Expected duration at 60fps: {:.3} sec", frames as f64 / 60.0);
-    println!("Speed ratio: {:.4}", (total_audio_samples as f64 / 44100.0) / (frames as f64 / 60.0));
+    println!(
+        "Samples per frame: {:.2} (expected ~{:.2})",
+        actual_per_frame, expected_samples_per_frame
+    );
+    println!(
+        "Expected total for {} frames: {:.0}",
+        frames, expected_total
+    );
+    println!(
+        "Ratio actual/expected: {:.4}",
+        total_audio_samples as f64 / expected_total
+    );
+    println!(
+        "Playback duration at 44100Hz: {:.3} sec",
+        total_audio_samples as f64 / 44100.0
+    );
+    println!(
+        "Expected duration at 60fps: {:.3} sec",
+        frames as f64 / 60.0
+    );
+    println!(
+        "Speed ratio: {:.4}",
+        (total_audio_samples as f64 / 44100.0) / (frames as f64 / 60.0)
+    );
     println!();
     println!("CPU cycles: {}", emu.cycles());
-    println!("Cycles per frame: {:.0}", emu.cycles() as f64 / frames.max(1) as f64);
-    println!("Expected cycles/frame (7159090/60): {:.0}", 7_159_090.0 / 60.0);
+    println!(
+        "Cycles per frame: {:.0}",
+        emu.cycles() as f64 / frames.max(1) as f64
+    );
+    println!(
+        "Expected cycles/frame (7159090/60): {:.0}",
+        7_159_090.0 / 60.0
+    );
 
     Ok(())
 }

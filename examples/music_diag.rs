@@ -45,13 +45,20 @@ fn main() -> Result<(), Box<dyn Error>> {
                 let irq1s_this_period = irq1_count - last_irq1;
 
                 println!("=== Frame {} ===", frames);
-                println!("  Timer: enabled={}, counter={}, control=${:02X}",
-                    timer_enabled, timer_counter, timer_control);
+                println!(
+                    "  Timer: enabled={}, counter={}, control=${:02X}",
+                    timer_enabled, timer_counter, timer_control
+                );
                 let irq_mask = emu.bus.read_io(0x1402);
-                println!("  IRQ mask: ${:02X} (timer_disabled={})",
-                    irq_mask, irq_mask & 0x04 != 0);
-                println!("  IRQs this period: VBlank={}, Timer={}",
-                    irq1s_this_period, timer_irqs_this_period);
+                println!(
+                    "  IRQ mask: ${:02X} (timer_disabled={})",
+                    irq_mask,
+                    irq_mask & 0x04 != 0
+                );
+                println!(
+                    "  IRQs this period: VBlank={}, Timer={}",
+                    irq1s_this_period, timer_irqs_this_period
+                );
 
                 // Check PSG channels
                 print!("  PSG channels active: ");
@@ -75,15 +82,25 @@ fn main() -> Result<(), Box<dyn Error>> {
         let timer_vector = emu.bus.read_u16(0xFFFA);
         let irq1_vector = emu.bus.read_u16(0xFFF8);
 
-        if emu.cpu.pc == timer_vector && prev_pc != timer_vector && timer_vector != 0 && timer_vector != 0xFFFF {
+        if emu.cpu.pc == timer_vector
+            && prev_pc != timer_vector
+            && timer_vector != 0
+            && timer_vector != 0xFFFF
+        {
             timer_irq_count += 1;
             if timer_irq_count <= 10 {
-                println!("  Timer IRQ #{} at frame {} tick {} from PC=${:04X}",
-                    timer_irq_count, frames, total_ticks, prev_pc);
+                println!(
+                    "  Timer IRQ #{} at frame {} tick {} from PC=${:04X}",
+                    timer_irq_count, frames, total_ticks, prev_pc
+                );
             }
         }
 
-        if emu.cpu.pc == irq1_vector && prev_pc != irq1_vector && irq1_vector != 0 && irq1_vector != 0xFFFF {
+        if emu.cpu.pc == irq1_vector
+            && prev_pc != irq1_vector
+            && irq1_vector != 0
+            && irq1_vector != 0xFFFF
+        {
             irq1_count += 1;
         }
 
@@ -93,12 +110,21 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     }
 
-    println!("\n=== Summary ({} frames, {} ticks) ===", frames, total_ticks);
+    println!(
+        "\n=== Summary ({} frames, {} ticks) ===",
+        frames, total_ticks
+    );
     println!("Total VBlank IRQs: {}", irq1_count);
     println!("Total Timer IRQs: {}", timer_irq_count);
     if frames > 0 {
-        println!("VBlank IRQs per frame: {:.2}", irq1_count as f64 / frames as f64);
-        println!("Timer IRQs per frame: {:.2}", timer_irq_count as f64 / frames as f64);
+        println!(
+            "VBlank IRQs per frame: {:.2}",
+            irq1_count as f64 / frames as f64
+        );
+        println!(
+            "Timer IRQs per frame: {:.2}",
+            timer_irq_count as f64 / frames as f64
+        );
     }
 
     println!("\nTimer enable/disable events:");
@@ -106,13 +132,21 @@ fn main() -> Result<(), Box<dyn Error>> {
         println!("  (none - timer was never toggled)");
     }
     for (frame, enabled, counter) in &timer_enable_events {
-        println!("  Frame {}: {} (counter={})", frame, if *enabled { "ENABLED" } else { "DISABLED" }, counter);
+        println!(
+            "  Frame {}: {} (counter={})",
+            frame,
+            if *enabled { "ENABLED" } else { "DISABLED" },
+            counter
+        );
     }
 
     // Final timer state
     let timer_control = emu.bus.read_io(0x0C01);
     let timer_counter = emu.bus.read_io(0x0C00);
-    println!("\nFinal timer state: control=${:02X}, counter={}", timer_control, timer_counter);
+    println!(
+        "\nFinal timer state: control=${:02X}, counter={}",
+        timer_control, timer_counter
+    );
 
     // Read IRQ vectors
     println!("\nIRQ vectors:");

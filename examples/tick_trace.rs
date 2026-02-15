@@ -45,27 +45,49 @@ fn main() -> Result<(), Box<dyn Error>> {
                 for ch in 0..6 {
                     let (freq, ctrl, _, _) = emu.bus.psg_channel_info(ch);
                     if freq != prev_freq[ch] {
-                        let hz = if freq > 0 { 3_579_545.0 / (32.0 * freq as f64) } else { 0.0 };
-                        println!("Frame {:3}: CH{} freq {:4} ({:6.1}Hz) tick_ctr={} dur={}",
-                            frames, ch, freq, hz, ticks[ch], durs[ch]);
+                        let hz = if freq > 0 {
+                            3_579_545.0 / (32.0 * freq as f64)
+                        } else {
+                            0.0
+                        };
+                        println!(
+                            "Frame {:3}: CH{} freq {:4} ({:6.1}Hz) tick_ctr={} dur={}",
+                            frames, ch, freq, hz, ticks[ch], durs[ch]
+                        );
                         prev_freq[ch] = freq;
                     }
                 }
             }
         }
-        if emu.cpu.halted { break; }
+        if emu.cpu.halted {
+            break;
+        }
     }
 
     // Print tick counter evolution for channels 0, 4, 5
     println!("\n=== Tick counter per frame (CH0=melody, CH4=drums, CH5=bass) ===");
-    println!("{:>5} | {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} | {:>4} {:>4} {:>4} {:>4} {:>4} {:>4}",
-        "Frame", "T0", "T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9", "T10", "T11");
+    println!(
+        "{:>5} | {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} | {:>4} {:>4} {:>4} {:>4} {:>4} {:>4}",
+        "Frame", "T0", "T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9", "T10", "T11"
+    );
     for &(frame, ref ticks, _) in &tick_snapshots {
         if frame >= 340 && frame <= 365 {
-            println!("{:5} | {:4} {:4} {:4} {:4} {:4} {:4} | {:4} {:4} {:4} {:4} {:4} {:4}",
+            println!(
+                "{:5} | {:4} {:4} {:4} {:4} {:4} {:4} | {:4} {:4} {:4} {:4} {:4} {:4}",
                 frame,
-                ticks[0], ticks[1], ticks[2], ticks[3], ticks[4], ticks[5],
-                ticks[6], ticks[7], ticks[8], ticks[9], ticks[10], ticks[11]);
+                ticks[0],
+                ticks[1],
+                ticks[2],
+                ticks[3],
+                ticks[4],
+                ticks[5],
+                ticks[6],
+                ticks[7],
+                ticks[8],
+                ticks[9],
+                ticks[10],
+                ticks[11]
+            );
         }
     }
 
@@ -73,7 +95,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("\n=== Duration values ($2A01+X) at last frame ===");
     if let Some(&(_, _, ref durs)) = tick_snapshots.last() {
         for ch in 0..12 {
-            println!("  Channel {:2}: duration = {} (${:02X})", ch, durs[ch], durs[ch]);
+            println!(
+                "  Channel {:2}: duration = {} (${:02X})",
+                ch, durs[ch], durs[ch]
+            );
         }
     }
 

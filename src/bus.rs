@@ -427,7 +427,7 @@ const DCR_ENABLE_CRAM_DMA: u8 = 0x02;
 const DCR_ENABLE_SATB_DMA: u8 = 0x04;
 const DCR_ENABLE_CRAM_DMA_ALT: u8 = 0x20; // Some docs describe bit5 as CRAM DMA enable.
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, bincode::Encode, bincode::Decode)]
 enum VdcPort {
     Control,
     Data,
@@ -436,7 +436,7 @@ enum VdcPort {
 /// Memory bus exposing an 8x8 KiB banked window into linear RAM/ROM data.
 /// This mirrors the HuC6280 page architecture and provides simple helpers
 /// for experimenting with bank switching.
-#[derive(Clone)]
+#[derive(Clone, bincode::Encode, bincode::Decode)]
 pub struct Bus {
     ram: Vec<u8>,
     rom: Vec<u8>,
@@ -1577,7 +1577,13 @@ impl Bus {
     pub fn psg_channel_detail(&self, ch: usize) -> (u8, u8, u32, u32, u8) {
         if ch < 6 {
             let c = &self.psg.channels[ch];
-            (c.wave_pos, c.wave_write_pos, c.phase, c.phase_step, c.dda_sample)
+            (
+                c.wave_pos,
+                c.wave_write_pos,
+                c.phase,
+                c.phase_step,
+                c.dda_sample,
+            )
         } else {
             (0, 0, 0, 0, 0)
         }
@@ -1585,7 +1591,12 @@ impl Bus {
 
     /// Returns timer state: (reload, counter, enabled, prescaler).
     pub fn timer_info(&self) -> (u8, u8, bool, u32) {
-        (self.timer.reload, self.timer.counter, self.timer.enabled, self.timer.prescaler)
+        (
+            self.timer.reload,
+            self.timer.counter,
+            self.timer.enabled,
+            self.timer.prescaler,
+        )
     }
 
     /// Returns IRQ disable mask and request register.
@@ -1857,6 +1868,10 @@ impl Bus {
 
     pub fn vdc_scroll_line_valid(&self, line: usize) -> bool {
         self.vdc.scroll_line_valid(line)
+    }
+
+    pub fn vdc_line_state_index_for_row(&self, row: usize) -> usize {
+        self.vdc.line_state_index_for_frame_row(row)
     }
 
     pub fn vdc_zoom_line(&self, line: usize) -> (u16, u16) {
@@ -2187,7 +2202,7 @@ impl Bus {
                     self.framebuffer[row_start..row_end].fill(fill_colour);
                     continue;
                 }
-                let active_row = self.vdc.active_row_for_output_row(y).unwrap_or(0);
+                let _active_row = self.vdc.active_row_for_output_row(y).unwrap_or(0);
                 if Self::env_force_test_palette() {
                     // パレットを毎行クリアして強制表示色を維持
                     for i in 0..self.vce.palette.len() {
@@ -2197,12 +2212,15 @@ impl Bus {
                         }
                     }
                 }
-                let (x_scroll, y_scroll) = self.vdc.scroll_values_for_line(line_state_index);
+                let (x_scroll, y_scroll, y_offset) =
+                    self.vdc.scroll_values_for_line(line_state_index);
                 let (zoom_x_raw, zoom_y_raw) = self.vdc.zoom_values_for_line(line_state_index);
                 let step_x = Vdc::zoom_step_value(zoom_x_raw);
                 let step_y = Vdc::zoom_step_value(zoom_y_raw);
-                // BG Y scroll: the first active line displays BYR, each
-                // subsequent active line increments by 1 (done via active_row).
+                // BG Y scroll: y_scroll is the latched BYR value, y_offset
+                // is the number of active lines since BYR was last set.
+                // The offset (not active_row) is used so that mid-frame
+                // BYR writes (split-screen) produce the correct Y position.
                 let y_origin_bias = 0i32;
                 let effective_y_scroll = y_scroll as i32;
                 let vram = &self.vdc.vram;
@@ -2218,8 +2236,8 @@ impl Bus {
                 let swap_bytes = Self::env_bg_swap_bytes();
                 let bit_lsb = Self::env_bg_bit_lsb();
                 let start_x_fp = (x_scroll as usize) << 4;
-                let sample_y_fp = ((effective_y_scroll + y_origin_bias) << 4)
-                    + (step_y as i32 * active_row as i32);
+                let sample_y_fp =
+                    ((effective_y_scroll + y_origin_bias) << 4) + (step_y as i32 * y_offset as i32);
                 let sample_y = {
                     let raw = (sample_y_fp >> 4) + Self::env_bg_y_bias();
                     raw.rem_euclid((map_height * TILE_HEIGHT) as i32) as usize
@@ -3167,7 +3185,7 @@ impl Bus {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, bincode::Encode, bincode::Decode)]
 enum BankMapping {
     Ram { base: usize },
     Rom { base: usize },
@@ -3175,7 +3193,7 @@ enum BankMapping {
     Hardware,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, bincode::Encode, bincode::Decode)]
 enum ControlRegister {
     TimerCounter,
     TimerControl,
@@ -3183,7 +3201,7 @@ enum ControlRegister {
     IrqStatus,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, bincode::Encode, bincode::Decode)]
 struct IoPort {
     output: u8,
     direction: u8,
@@ -3192,7 +3210,7 @@ struct IoPort {
     input: u8,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, bincode::Encode, bincode::Decode)]
 struct Timer {
     reload: u8,
     counter: u8,
@@ -3200,7 +3218,7 @@ struct Timer {
     enabled: bool,
 }
 
-#[derive(Clone)]
+#[derive(Clone, bincode::Encode, bincode::Decode)]
 struct Vdc {
     registers: [u16; VDC_REGISTER_COUNT],
     vram: Vec<u16>,
@@ -3229,6 +3247,10 @@ struct Vdc {
     scroll_y_pending: u16,
     scroll_x_dirty: bool,
     scroll_y_dirty: bool,
+    /// Number of active display lines since BYR was last loaded/written.
+    /// Reset to 0 at the first active scanline of each frame and on BYR writes.
+    bg_y_offset: u16,
+    bg_y_offset_loaded: bool,
     zoom_x: u16,
     zoom_y: u16,
     zoom_x_pending: u16,
@@ -3237,6 +3259,8 @@ struct Vdc {
     zoom_y_dirty: bool,
     scroll_line_x: [u16; LINES_PER_FRAME as usize],
     scroll_line_y: [u16; LINES_PER_FRAME as usize],
+    /// Per-line BG Y offset (active lines since BYR was last set).
+    scroll_line_y_offset: [u16; LINES_PER_FRAME as usize],
     zoom_line_x: [u16; LINES_PER_FRAME as usize],
     zoom_line_y: [u16; LINES_PER_FRAME as usize],
     control_line: [u16; LINES_PER_FRAME as usize],
@@ -3314,7 +3338,7 @@ const DMA_CTRL_SATB_AUTO: u16 = 0x0010;
 const VDC_VISIBLE_LINES: u16 = 240;
 const VDC_MAX_VBLANK_START_LINE: usize = (LINES_PER_FRAME as usize) - 2;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, bincode::Encode, bincode::Decode)]
 struct VerticalWindow {
     timing_programmed: bool,
     active_start_line: usize,
@@ -3353,6 +3377,8 @@ impl Vdc {
             scroll_y_pending: 0,
             scroll_x_dirty: false,
             scroll_y_dirty: false,
+            bg_y_offset: 0,
+            bg_y_offset_loaded: false,
             zoom_x: 0x0010,
             zoom_y: 0x0010,
             zoom_x_pending: 0x0010,
@@ -3361,6 +3387,7 @@ impl Vdc {
             zoom_y_dirty: false,
             scroll_line_x: [0; LINES_PER_FRAME as usize],
             scroll_line_y: [0; LINES_PER_FRAME as usize],
+            scroll_line_y_offset: [0; LINES_PER_FRAME as usize],
             zoom_line_x: [0; LINES_PER_FRAME as usize],
             zoom_line_y: [0; LINES_PER_FRAME as usize],
             control_line: [0; LINES_PER_FRAME as usize],
@@ -3470,6 +3497,8 @@ impl Vdc {
         self.scroll_y_pending = 0;
         self.scroll_x_dirty = false;
         self.scroll_y_dirty = false;
+        self.bg_y_offset = 0;
+        self.bg_y_offset_loaded = false;
         self.zoom_x = 0x0010;
         self.zoom_y = 0x0010;
         self.zoom_x_pending = 0x0010;
@@ -3783,6 +3812,11 @@ impl Vdc {
                     if self.control() & 0x0004 != 0 {
                         self.raise_status(VDC_STATUS_RCR);
                         irq_recalc = true;
+                        // Break out of the scanline loop so the CPU can
+                        // process the RCR interrupt (e.g. update BXR/BYR
+                        // for split-screen scrolling) before we latch
+                        // scroll values for subsequent scanlines.
+                        break;
                     }
                 }
             }
@@ -4386,6 +4420,9 @@ impl Vdc {
         if self.scroll_y_dirty {
             self.scroll_y = self.scroll_y_pending & 0x01FF;
             self.scroll_y_dirty = false;
+            // Writing BYR resets the line offset counter.
+            self.bg_y_offset = 0;
+            self.bg_y_offset_loaded = true;
         }
     }
 
@@ -4403,13 +4440,35 @@ impl Vdc {
     fn latch_line_state(&mut self, line: usize) {
         self.apply_pending_scroll();
         self.apply_pending_zoom();
+
+        // HuC6270 BG Y offset tracking:
+        //  - At the first active scanline of each frame, the offset resets to 0.
+        //  - Each subsequent active scanline, the offset auto-increments.
+        //  - Writing BYR mid-frame resets the offset to 0 (handled in
+        //    apply_pending_scroll above).
+        // The renderer computes: sample_y = BYR + offset * zoom_step.
+        let window = self.vertical_window();
+        let is_active =
+            !self.in_vblank && line >= window.active_start_line && line < window.vblank_start_line;
+
+        if is_active && !self.bg_y_offset_loaded {
+            self.bg_y_offset = 0;
+            self.bg_y_offset_loaded = true;
+        }
+
         let idx = line % self.scroll_line_x.len();
         self.scroll_line_x[idx] = self.scroll_x;
         self.scroll_line_y[idx] = self.scroll_y;
+        self.scroll_line_y_offset[idx] = self.bg_y_offset;
         self.zoom_line_x[idx] = self.zoom_x;
         self.zoom_line_y[idx] = self.zoom_y;
         self.control_line[idx] = self.control_for_render();
         self.scroll_line_valid[idx] = true;
+
+        // After latching, increment the offset for the next active scanline.
+        if is_active && self.bg_y_offset_loaded {
+            self.bg_y_offset = self.bg_y_offset.wrapping_add(1);
+        }
     }
 
     fn ensure_line_state(&mut self, line: usize) {
@@ -4423,6 +4482,15 @@ impl Vdc {
             self.apply_pending_zoom();
             self.scroll_line_x[line] = self.scroll_x;
             self.scroll_line_y[line] = self.scroll_y;
+            // For lines not latched by the scanline loop (e.g. direct
+            // render calls in tests), synthesise the Y offset.
+            let window = self.vertical_window();
+            let offset = if line >= window.active_start_line && line < window.vblank_start_line {
+                (line - window.active_start_line) as u16
+            } else {
+                0
+            };
+            self.scroll_line_y_offset[line] = offset;
             self.zoom_line_x[line] = self.zoom_x;
             self.zoom_line_y[line] = self.zoom_y;
             self.control_line[line] = self.control_for_render();
@@ -4430,15 +4498,18 @@ impl Vdc {
         }
     }
 
-    fn scroll_values_for_line(&mut self, line: usize) -> (usize, usize) {
+    /// Returns (x_scroll, y_scroll, y_offset) for the given line.
+    /// y_offset is the number of active lines since BYR was last loaded/written.
+    fn scroll_values_for_line(&mut self, line: usize) -> (usize, usize, usize) {
         self.ensure_line_state(line);
         if line < self.scroll_line_x.len() {
             (
                 self.scroll_line_x[line] as usize,
                 self.scroll_line_y[line] as usize,
+                self.scroll_line_y_offset[line] as usize,
             )
         } else {
-            (self.scroll_x as usize, self.scroll_y as usize)
+            (self.scroll_x as usize, self.scroll_y as usize, 0)
         }
     }
 
@@ -4473,6 +4544,7 @@ impl Vdc {
             self.in_vblank = false;
             self.scroll_line_valid.fill(false);
             self.refresh_activity_flags();
+            self.bg_y_offset_loaded = false;
             wrapped = true;
         }
         self.latch_line_state(self.scanline as usize);
@@ -4524,13 +4596,13 @@ impl Vdc {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, bincode::Encode, bincode::Decode)]
 enum VdcWritePhase {
     Low,
     High,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, bincode::Encode, bincode::Decode)]
 enum VdcReadPhase {
     Low,
     High,
@@ -4608,7 +4680,7 @@ fn psg_balance_scale_tab() -> &'static [u8; 16] {
     })
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, bincode::Encode, bincode::Decode)]
 struct PsgChannel {
     frequency: u16,
     phase_step: u32,
@@ -4641,7 +4713,7 @@ impl Default for PsgChannel {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, bincode::Encode, bincode::Decode)]
 struct Psg {
     regs: [u8; PSG_REG_COUNT],
     select: u8,
@@ -4921,16 +4993,16 @@ impl Psg {
                 let nf = (ch.noise_control & PSG_NOISE_FREQ_MASK) as u32;
                 let raw = 31u32.saturating_sub(nf);
                 let period = if raw == 0 { 64u64 } else { raw as u64 * 128 };
-                let noise_step = ((PSG_CLOCK_HZ as u64) << 16)
-                    / (period * AUDIO_SAMPLE_RATE as u64);
+                let noise_step =
+                    ((PSG_CLOCK_HZ as u64) << 16) / (period * AUDIO_SAMPLE_RATE as u64);
                 ch.noise_phase = ch.noise_phase.wrapping_add(noise_step.max(1) as u32);
                 let steps = (ch.noise_phase >> 16) as usize;
                 ch.noise_phase &= 0xFFFF;
                 for _ in 0..steps {
                     let lfsr = ch.noise_lfsr;
-                    let feedback = ((lfsr >> 0) ^ (lfsr >> 1)
-                        ^ (lfsr >> 11) ^ (lfsr >> 12) ^ (lfsr >> 17))
-                        & 0x01;
+                    let feedback =
+                        ((lfsr >> 0) ^ (lfsr >> 1) ^ (lfsr >> 11) ^ (lfsr >> 12) ^ (lfsr >> 17))
+                            & 0x01;
                     ch.noise_lfsr = (lfsr >> 1) | (feedback << 17);
                     if ch.noise_lfsr == 0 {
                         ch.noise_lfsr = 1;
@@ -5028,7 +5100,7 @@ impl Psg {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, bincode::Encode, bincode::Decode)]
 struct Vce {
     palette: [u16; 0x200],
     control: u16,
@@ -5039,7 +5111,7 @@ struct Vce {
     data_high_without_low: u64,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, bincode::Encode, bincode::Decode)]
 enum VcePhase {
     Low,
     High,
@@ -5920,18 +5992,18 @@ mod tests {
     fn scroll_writes_apply_on_next_visible_scanline() {
         let mut vdc = Vdc::new();
         vdc.advance_scanline_for_test();
-        let (x0, _) = vdc.scroll_values_for_line(0);
+        let (x0, _, _) = vdc.scroll_values_for_line(0);
         assert_eq!(x0, 0);
 
         vdc.write_select(0x07);
         vdc.write_data_low(0x34);
         vdc.write_data_high(0x12);
 
-        let (x_still, _) = vdc.scroll_values_for_line(0);
+        let (x_still, _, _) = vdc.scroll_values_for_line(0);
         assert_eq!(x_still, 0);
 
         vdc.advance_scanline_for_test();
-        let (x1, _) = vdc.scroll_values_for_line(1);
+        let (x1, _, _) = vdc.scroll_values_for_line(1);
         assert_eq!(x1, 0x1234 & 0x03FF);
 
         let (x_now, _) = vdc.scroll_for_scanline();

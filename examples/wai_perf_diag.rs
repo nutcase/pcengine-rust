@@ -5,9 +5,9 @@ use std::error::Error;
 use std::time::Instant;
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let rom_path = std::env::args().nth(1).unwrap_or_else(|| {
-        "roms/Kato-chan & Ken-chan (Japan).pce".to_string()
-    });
+    let rom_path = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "roms/Kato-chan & Ken-chan (Japan).pce".to_string());
     let rom = std::fs::read(&rom_path)?;
     let mut emu = Emulator::new();
     emu.load_hucard(&rom)?;
@@ -55,7 +55,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                 let wall_ms = elapsed.as_secs_f64() * 1000.0;
                 let wai_pct = if sec_ticks > 0 {
                     sec_wai as f64 / sec_ticks as f64 * 100.0
-                } else { 0.0 };
+                } else {
+                    0.0
+                };
                 let avg_ticks_per_frame = sec_ticks / 60;
                 let realtime = if wall_ms < 1050.0 { "YES" } else { "SLOW" };
                 println!(
@@ -70,13 +72,21 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
         }
 
-        if emu.cpu.halted { break; }
+        if emu.cpu.halted {
+            break;
+        }
     }
 
     let total = wai_ticks + active_ticks;
     println!("\n=== Summary ===");
-    println!("Total ticks: {} (WAI: {}, active: {})", total, wai_ticks, active_ticks);
-    println!("WAI fraction: {:.1}%", wai_ticks as f64 / total as f64 * 100.0);
+    println!(
+        "Total ticks: {} (WAI: {}, active: {})",
+        total, wai_ticks, active_ticks
+    );
+    println!(
+        "WAI fraction: {:.1}%",
+        wai_ticks as f64 / total as f64 * 100.0
+    );
     println!("Avg ticks/frame: {}", total / frames.max(1));
 
     Ok(())

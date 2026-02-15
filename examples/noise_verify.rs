@@ -11,7 +11,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     emu.reset();
 
     println!("=== Noise Rate Verification (Mednafen formula) ===");
-    println!("{:>4} {:>8} {:>12} {:>12} {:>8}", "NF", "period", "expected_Hz", "measured_Hz", "error%");
+    println!(
+        "{:>4} {:>8} {:>12} {:>12} {:>8}",
+        "NF", "period", "expected_Hz", "measured_Hz", "error%"
+    );
 
     for nf in [0u8, 5, 10, 15, 20, 25, 30, 31] {
         // Set up CH4 with noise enabled, all other channels off
@@ -55,8 +58,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             0.0
         };
 
-        println!("{:4} {:8} {:12.1} {:12.1} {:8.1}",
-            nf, period, expected_lfsr_rate, estimated_lfsr_rate, error_pct);
+        println!(
+            "{:4} {:8} {:12.1} {:12.1} {:8.1}",
+            nf, period, expected_lfsr_rate, estimated_lfsr_rate, error_pct
+        );
     }
 
     Ok(())

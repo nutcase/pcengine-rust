@@ -66,10 +66,17 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
 
         // Detect timer vector entry
-        if vectors_read && emu.cpu.pc == timer_vector && prev_pc != timer_vector && timer_vector != vbl_isr_addr {
+        if vectors_read
+            && emu.cpu.pc == timer_vector
+            && prev_pc != timer_vector
+            && timer_vector != vbl_isr_addr
+        {
             timer_irq_count += 1;
             if timer_irq_count <= 5 {
-                println!("[frame {:3} tick {:8}] Timer IRQ #{}", frames, total_ticks, timer_irq_count);
+                println!(
+                    "[frame {:3} tick {:8}] Timer IRQ #{}",
+                    frames, total_ticks, timer_irq_count
+                );
             }
         }
 
@@ -109,7 +116,12 @@ fn main() -> Result<(), Box<dyn Error>> {
                     // Key on/off change
                     if frames <= 100 || (frames >= 300 && frames <= 320) {
                         let on = ctrl & 0x80 != 0;
-                        println!("Frame {:3}: CH{} key {}", frames, ch, if on { "ON" } else { "OFF" });
+                        println!(
+                            "Frame {:3}: CH{} key {}",
+                            frames,
+                            ch,
+                            if on { "ON" } else { "OFF" }
+                        );
                     }
                 }
                 prev_ctrl[ch] = ctrl;
@@ -119,51 +131,80 @@ fn main() -> Result<(), Box<dyn Error>> {
             frame_start_cycles = emu.cycles();
 
             if frames == 1 || frames % 60 == 0 {
-                println!("Frame {:3}: cycles/frame={}, timer_irqs={}, vbl_isr={}",
-                    frames, cycle_count, timer_irq_count, vbl_isr_entries);
+                println!(
+                    "Frame {:3}: cycles/frame={}, timer_irqs={}, vbl_isr={}",
+                    frames, cycle_count, timer_irq_count, vbl_isr_entries
+                );
             }
         }
 
-        if emu.cpu.halted { break; }
+        if emu.cpu.halted {
+            break;
+        }
     }
 
     // Summary
-    println!("\n=== PL'93 Timing Summary ({} frames, {} total cycles) ===", frames, emu.cycles());
+    println!(
+        "\n=== PL'93 Timing Summary ({} frames, {} total cycles) ===",
+        frames,
+        emu.cycles()
+    );
     let avg_cycles = emu.cycles() as f64 / frames as f64;
     println!("Avg cycles/frame: {:.1}", avg_cycles);
 
     let total_audio_samples = (emu.cycles() as f64 * 44_100.0 / 7_159_090.0) as u64;
     let duration_sec = total_audio_samples as f64 / 44_100.0;
     println!("Audio duration: {:.3}s for {} frames", duration_sec, frames);
-    println!("Effective frame rate: {:.3} Hz", frames as f64 / duration_sec);
+    println!(
+        "Effective frame rate: {:.3} Hz",
+        frames as f64 / duration_sec
+    );
 
-    println!("\nVBL ISR entries: {} ({:.2}/frame)", vbl_isr_entries, vbl_isr_entries as f64 / frames as f64);
-    println!("Timer IRQs: {} ({:.4}/frame)", timer_irq_count, timer_irq_count as f64 / frames as f64);
+    println!(
+        "\nVBL ISR entries: {} ({:.2}/frame)",
+        vbl_isr_entries,
+        vbl_isr_entries as f64 / frames as f64
+    );
+    println!(
+        "Timer IRQs: {} ({:.4}/frame)",
+        timer_irq_count,
+        timer_irq_count as f64 / frames as f64
+    );
 
     // Most frequent sound entry points
     let mut sorted_entries: Vec<_> = jsr_counts.into_iter().collect();
     sorted_entries.sort_by(|a, b| b.1.cmp(&a.1));
     println!("\n=== Most frequent entries to $D000-DFFF and $4000-5FFF ===");
     for &(addr, count) in sorted_entries.iter().take(15) {
-        println!("  ${:04X}: {} calls ({:.2}/frame)", addr, count, count as f64 / frames as f64);
+        println!(
+            "  ${:04X}: {} calls ({:.2}/frame)",
+            addr,
+            count,
+            count as f64 / frames as f64
+        );
     }
 
     // Note change intervals
     println!("\n=== Note Change Intervals (BPM analysis) ===");
     for ch in 0..6 {
-        let changes: Vec<u64> = freq_changes.iter()
+        let changes: Vec<u64> = freq_changes
+            .iter()
             .filter(|&&(f, c, _, _)| c == ch && f >= 300)
             .map(|&(f, _, _, _)| f)
             .collect();
         if changes.len() >= 2 {
-            let intervals: Vec<u64> = changes.windows(2)
-                .map(|w| w[1] - w[0])
-                .collect();
+            let intervals: Vec<u64> = changes.windows(2).map(|w| w[1] - w[0]).collect();
             let avg_frames = intervals.iter().sum::<u64>() as f64 / intervals.len() as f64;
             let avg_seconds = avg_frames / 60.0;
             let bpm = 60.0 / avg_seconds;
-            println!("  CH{}: {} notes, avg interval={:.1} frames ({:.2}s), ~{:.1} BPM",
-                ch, changes.len(), avg_frames, avg_seconds, bpm);
+            println!(
+                "  CH{}: {} notes, avg interval={:.1} frames ({:.2}s), ~{:.1} BPM",
+                ch,
+                changes.len(),
+                avg_frames,
+                avg_seconds,
+                bpm
+            );
             if intervals.len() <= 20 {
                 println!("    Intervals: {:?}", intervals);
             } else {
@@ -177,14 +218,19 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Frequency values for first few notes per channel (frames >= 300)
     println!("\n=== First 20 freq changes per channel (frame >= 300) ===");
     for ch in 0..6 {
-        let ch_changes: Vec<_> = freq_changes.iter()
+        let ch_changes: Vec<_> = freq_changes
+            .iter()
             .filter(|&&(f, c, _, _)| c == ch && f >= 300)
             .take(20)
             .collect();
         if !ch_changes.is_empty() {
             print!("  CH{}: ", ch);
             for &&(f, _, old, new) in &ch_changes {
-                let hz = if new > 0 { 3_579_545.0 / (32.0 * new as f64) } else { 0.0 };
+                let hz = if new > 0 {
+                    3_579_545.0 / (32.0 * new as f64)
+                } else {
+                    0.0
+                };
                 print!("f{}:{}->{} ({:.0}Hz) ", f, old, new, hz);
             }
             println!();
@@ -194,7 +240,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Timer state
     println!("\n=== Timer State ===");
     println!("  Timer counter: {}", emu.bus.read_io(0x0C00));
-    println!("  Timer control: ${:02X} (enabled={})", emu.bus.read_io(0x0C01), emu.bus.read_io(0x0C01) & 1 != 0);
+    println!(
+        "  Timer control: ${:02X} (enabled={})",
+        emu.bus.read_io(0x0C01),
+        emu.bus.read_io(0x0C01) & 1 != 0
+    );
     println!("  IRQ disable: ${:02X}", emu.bus.read_io(0x1402));
 
     // Dump work RAM area (check for sound driver state)

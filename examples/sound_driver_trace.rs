@@ -60,10 +60,18 @@ fn main() -> Result<(), Box<dyn Error>> {
                 let vbl_entries = vbl_isr_entries - last_vbl_entries;
                 let vbl_proc = vbl_processed - last_vbl_processed;
 
-                println!("Frame {}: sound_driver={} ({}/frame), VBL_ISR={}, VBL_processed={}",
-                    frames, sd_calls,
-                    if frames > 1 { sd_calls as f64 / 60.0 } else { sd_calls as f64 },
-                    vbl_entries, vbl_proc);
+                println!(
+                    "Frame {}: sound_driver={} ({}/frame), VBL_ISR={}, VBL_processed={}",
+                    frames,
+                    sd_calls,
+                    if frames > 1 {
+                        sd_calls as f64 / 60.0
+                    } else {
+                        sd_calls as f64
+                    },
+                    vbl_entries,
+                    vbl_proc
+                );
 
                 last_sound_calls = sound_driver_calls;
                 last_vbl_entries = vbl_isr_entries;
@@ -71,13 +79,27 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
         }
 
-        if emu.cpu.halted { break; }
+        if emu.cpu.halted {
+            break;
+        }
     }
 
     println!("\n=== Summary ({} frames) ===", frames);
-    println!("Sound driver ($D094) calls: {} ({:.2}/frame)", sound_driver_calls, sound_driver_calls as f64 / frames as f64);
-    println!("VBL ISR ($FB83) entries: {} ({:.2}/frame)", vbl_isr_entries, vbl_isr_entries as f64 / frames as f64);
-    println!("VBL processing ($FB92): {} ({:.2}/frame)", vbl_processed, vbl_processed as f64 / frames as f64);
+    println!(
+        "Sound driver ($D094) calls: {} ({:.2}/frame)",
+        sound_driver_calls,
+        sound_driver_calls as f64 / frames as f64
+    );
+    println!(
+        "VBL ISR ($FB83) entries: {} ({:.2}/frame)",
+        vbl_isr_entries,
+        vbl_isr_entries as f64 / frames as f64
+    );
+    println!(
+        "VBL processing ($FB92): {} ({:.2}/frame)",
+        vbl_processed,
+        vbl_processed as f64 / frames as f64
+    );
 
     Ok(())
 }

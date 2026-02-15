@@ -117,6 +117,7 @@ impl ParsedHuCard {
     }
 }
 
+#[derive(Clone, bincode::Encode, bincode::Decode)]
 pub struct Emulator {
     pub cpu: Cpu,
     pub bus: Bus,
@@ -372,6 +373,30 @@ impl Emulator {
 
     pub fn set_audio_batch_size(&mut self, samples: usize) {
         self.audio_batch_size = samples.max(1);
+    }
+
+    pub fn save_state_to_file<P: AsRef<std::path::Path>>(
+        &self,
+        path: P,
+    ) -> Result<(), Box<dyn Error>> {
+        let bytes = bincode::encode_to_vec(self, bincode::config::standard())?;
+        std::fs::write(path, bytes)?;
+        Ok(())
+    }
+
+    pub fn load_state_from_file<P: AsRef<std::path::Path>>(
+        &mut self,
+        path: P,
+    ) -> Result<(), Box<dyn Error>> {
+        let bytes = std::fs::read(path)?;
+        let (mut state, _): (Emulator, usize) =
+            bincode::decode_from_slice(&bytes, bincode::config::standard())?;
+        // Keep front-end configured batch size and discard stale queued audio.
+        state.audio_batch_size = self.audio_batch_size;
+        state.audio_buffer.clear();
+        let _ = state.bus.take_audio_samples();
+        *self = state;
+        Ok(())
     }
 
     pub fn take_audio_samples(&mut self) -> Option<Vec<i16>> {

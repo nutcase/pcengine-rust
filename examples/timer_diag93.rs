@@ -13,22 +13,37 @@ fn main() -> Result<(), Box<dyn Error>> {
     while frames < 200 && total_ticks < 100_000_000 {
         emu.tick();
         total_ticks += 1;
-        if emu.take_frame().is_some() { frames += 1; }
-        if emu.cpu.halted { break; }
+        if emu.take_frame().is_some() {
+            frames += 1;
+        }
+        if emu.cpu.halted {
+            break;
+        }
     }
 
     // Now measure timer state and IRQ rates over the next 60 frames (1 second)
     println!("=== Timer Diagnostic at frame {} ===", frames);
     let (reload, counter, enabled, prescaler) = emu.bus.timer_info();
     let (irq_disable, irq_request) = emu.bus.irq_state();
-    println!("Timer: reload={} counter={} enabled={} prescaler={}", reload, counter, enabled, prescaler);
-    println!("IRQ: disable_mask=${:02X} request=${:02X}", irq_disable, irq_request);
+    println!(
+        "Timer: reload={} counter={} enabled={} prescaler={}",
+        reload, counter, enabled, prescaler
+    );
+    println!(
+        "IRQ: disable_mask=${:02X} request=${:02X}",
+        irq_disable, irq_request
+    );
 
     if enabled {
         let period_phi = 1024 * (reload as u64 + 1);
         let fire_rate = 7_159_090.0 / period_phi as f64;
-        println!("Expected timer fire rate: {:.1} Hz (period={}+1={} * 1024 = {} phi cycles)",
-            fire_rate, reload, reload as u64 + 1, period_phi);
+        println!(
+            "Expected timer fire rate: {:.1} Hz (period={}+1={} * 1024 = {} phi cycles)",
+            fire_rate,
+            reload,
+            reload as u64 + 1,
+            period_phi
+        );
     } else {
         println!("Timer is DISABLED");
     }
@@ -45,9 +60,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         let key_on = (control & 0x80) != 0;
         let dda = (control & 0x40) != 0;
         let volume = control & 0x1F;
-        let hz = if freq == 0 { 0.0 } else { 3_579_545.0 / (32.0 * freq as f64) };
-        println!("  CH{}: freq=${:03X}({:.1}Hz) vol={} key={} dda={} bal=${:02X} noise=${:02X}",
-            ch, freq, hz, volume, key_on, dda, balance, noise_ctrl);
+        let hz = if freq == 0 {
+            0.0
+        } else {
+            3_579_545.0 / (32.0 * freq as f64)
+        };
+        println!(
+            "  CH{}: freq=${:03X}({:.1}Hz) vol={} key={} dda={} bal=${:02X} noise=${:02X}",
+            ch, freq, hz, volume, key_on, dda, balance, noise_ctrl
+        );
     }
 
     // Track timer reload changes (indicates music driver activity)
@@ -90,15 +111,24 @@ fn main() -> Result<(), Box<dyn Error>> {
             counter_wraps += 1;
         }
 
-        if emu.cpu.halted { break; }
+        if emu.cpu.halted {
+            break;
+        }
     }
 
     let elapsed_cycles = total_ticks - start_cycles;
     let elapsed_seconds = elapsed_cycles as f64 * 4.0 / 7_159_090.0; // approx
 
     println!("\n=== 60-frame measurement ===");
-    println!("CPU cycles: {} ({:.3}s approx)", elapsed_cycles, elapsed_seconds);
-    println!("Timer IRQs detected: {} ({:.1}/sec)", timer_irqs, timer_irqs as f64 / elapsed_seconds);
+    println!(
+        "CPU cycles: {} ({:.3}s approx)",
+        elapsed_cycles, elapsed_seconds
+    );
+    println!(
+        "Timer IRQs detected: {} ({:.1}/sec)",
+        timer_irqs,
+        timer_irqs as f64 / elapsed_seconds
+    );
     println!("VBlank frames: {}", vblank_irqs);
     println!("Timer reload changes: {}", reload_changes);
     println!("Counter wraps: {}", counter_wraps);
@@ -106,7 +136,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Final timer state
     let (reload, counter, enabled, prescaler) = emu.bus.timer_info();
     let (irq_disable, _) = emu.bus.irq_state();
-    println!("\nFinal timer: reload={} counter={} enabled={} prescaler={}", reload, counter, enabled, prescaler);
+    println!(
+        "\nFinal timer: reload={} counter={} enabled={} prescaler={}",
+        reload, counter, enabled, prescaler
+    );
     println!("Timer IRQ enabled in mask: {}", (irq_disable & 0x04) == 0);
 
     if timer_irqs > 0 {

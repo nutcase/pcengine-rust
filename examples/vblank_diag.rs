@@ -4,9 +4,9 @@ use pce::emulator::Emulator;
 use std::error::Error;
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let rom_path = std::env::args().nth(1).unwrap_or_else(|| {
-        "roms/Kato-chan & Ken-chan (Japan).pce".to_string()
-    });
+    let rom_path = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "roms/Kato-chan & Ken-chan (Japan).pce".to_string());
     let rom = std::fs::read(&rom_path)?;
     let mut emu = Emulator::new();
     emu.load_hucard(&rom)?;
@@ -39,7 +39,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     if enabled {
         let period_phi = 1024 * (reload as u64 + 1);
         let fire_rate = 7_159_090.0 / period_phi as f64;
-        println!("  Expected timer rate: {:.1} Hz ({} phi per tick)", fire_rate, period_phi);
+        println!(
+            "  Expected timer rate: {:.1} Hz ({} phi per tick)",
+            fire_rate, period_phi
+        );
     }
 
     // Read ISR vectors
@@ -127,7 +130,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     let phi_per_frame = elapsed_cycles as f64 / elapsed_frames as f64;
     let elapsed_seconds = elapsed_frames as f64 / 60.0;
 
-    println!("\n=== Results over {} frames ({:.2}s) ===", elapsed_frames, elapsed_seconds);
+    println!(
+        "\n=== Results over {} frames ({:.2}s) ===",
+        elapsed_frames, elapsed_seconds
+    );
     println!("Total CPU cycles: {}", elapsed_cycles);
     println!("Avg cycles/frame: {:.1}", phi_per_frame);
     println!("Implied frame rate: {:.2} Hz", 7_159_090.0 / phi_per_frame);
@@ -137,40 +143,67 @@ fn main() -> Result<(), Box<dyn Error>> {
         let min = *frame_cycles.iter().min().unwrap();
         let max = *frame_cycles.iter().max().unwrap();
         let mean = frame_cycles.iter().sum::<u64>() as f64 / frame_cycles.len() as f64;
-        println!("\nFrame cycle stats: min={} max={} mean={:.1}", min, max, mean);
+        println!(
+            "\nFrame cycle stats: min={} max={} mean={:.1}",
+            min, max, mean
+        );
     }
 
     // IRQ stats
     println!("\n=== IRQ Stats ===");
-    println!("VDC ISR entries:   {} ({:.1}/frame, {:.1}/sec)",
-        vdc_isr_count, vdc_isr_count as f64 / elapsed_frames as f64,
-        vdc_isr_count as f64 / elapsed_seconds);
-    println!("Timer ISR entries: {} ({:.1}/frame, {:.1}/sec)",
-        timer_isr_count, timer_isr_count as f64 / elapsed_frames as f64,
-        timer_isr_count as f64 / elapsed_seconds);
-    println!("Timer IRQ fires:   {} ({:.1}/frame, {:.1}/sec)",
-        timer_irq_fires, timer_irq_fires as f64 / elapsed_frames as f64,
-        timer_irq_fires as f64 / elapsed_seconds);
+    println!(
+        "VDC ISR entries:   {} ({:.1}/frame, {:.1}/sec)",
+        vdc_isr_count,
+        vdc_isr_count as f64 / elapsed_frames as f64,
+        vdc_isr_count as f64 / elapsed_seconds
+    );
+    println!(
+        "Timer ISR entries: {} ({:.1}/frame, {:.1}/sec)",
+        timer_isr_count,
+        timer_isr_count as f64 / elapsed_frames as f64,
+        timer_isr_count as f64 / elapsed_seconds
+    );
+    println!(
+        "Timer IRQ fires:   {} ({:.1}/frame, {:.1}/sec)",
+        timer_irq_fires,
+        timer_irq_fires as f64 / elapsed_frames as f64,
+        timer_irq_fires as f64 / elapsed_seconds
+    );
 
     if enabled {
         let expected_rate = 7_159_090.0 / (1024.0 * (reload as f64 + 1.0));
         println!("\nExpected timer rate: {:.1}/sec", expected_rate);
-        println!("Actual timer fires:  {:.1}/sec", timer_irq_fires as f64 / elapsed_seconds);
+        println!(
+            "Actual timer fires:  {:.1}/sec",
+            timer_irq_fires as f64 / elapsed_seconds
+        );
         if timer_irq_fires > 0 {
-            println!("Ratio: {:.4}", (timer_irq_fires as f64 / elapsed_seconds) / expected_rate);
+            println!(
+                "Ratio: {:.4}",
+                (timer_irq_fires as f64 / elapsed_seconds) / expected_rate
+            );
         }
     }
 
     // PSG activity
     let freq_per_sec = total_freq_changes as f64 / elapsed_seconds;
-    println!("\nPSG freq changes: {} total ({:.1}/sec)", total_freq_changes, freq_per_sec);
+    println!(
+        "\nPSG freq changes: {} total ({:.1}/sec)",
+        total_freq_changes, freq_per_sec
+    );
 
     // Final state
     println!("\nFinal CPU high_speed: {}", emu.cpu.clock_high_speed);
     let (reload, counter, enabled, prescaler) = emu.bus.timer_info();
-    println!("Final timer: reload={} counter={} enabled={} prescaler={}", reload, counter, enabled, prescaler);
+    println!(
+        "Final timer: reload={} counter={} enabled={} prescaler={}",
+        reload, counter, enabled, prescaler
+    );
     let (irq_disable, irq_request) = emu.bus.irq_state();
-    println!("IRQ: disable=${:02X} request=${:02X}", irq_disable, irq_request);
+    println!(
+        "IRQ: disable=${:02X} request=${:02X}",
+        irq_disable, irq_request
+    );
     println!("  Timer IRQ enabled: {}", (irq_disable & 0x04) == 0);
     println!("  IRQ1 enabled:      {}", (irq_disable & 0x02) == 0);
 

@@ -135,9 +135,9 @@ fn disasm_6502(bus: &mut pce::bus::Bus, addr: u16) -> (String, u16) {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let rom_path = std::env::args().nth(1).unwrap_or_else(|| {
-        "roms/Kato-chan & Ken-chan (Japan).pce".to_string()
-    });
+    let rom_path = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "roms/Kato-chan & Ken-chan (Japan).pce".to_string());
     let rom = std::fs::read(&rom_path)?;
     let mut emu = Emulator::new();
     emu.load_hucard(&rom)?;
@@ -147,8 +147,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut frames = 0u64;
     while frames < 200 {
         emu.tick();
-        if emu.take_frame().is_some() { frames += 1; }
-        if emu.cpu.halted { break; }
+        if emu.take_frame().is_some() {
+            frames += 1;
+        }
+        if emu.cpu.halted {
+            break;
+        }
     }
 
     // Read vectors

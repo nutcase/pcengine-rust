@@ -11,7 +11,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let max_ticks = 1_000_000u64;
     for _ in 0..max_ticks {
         emu.tick();
-        if emu.cpu.halted { break; }
+        if emu.cpu.halted {
+            break;
+        }
     }
 
     // Disassemble the VBlank ISR at $FB83
@@ -30,7 +32,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         };
         println!("  ${:04X}: {} {}", addr, bytes, mnemonic);
         addr = addr.wrapping_add(size as u16);
-        if op == 0x40 || op == 0x60 { // RTI or RTS
+        if op == 0x40 || op == 0x60 {
+            // RTI or RTS
             break;
         }
     }

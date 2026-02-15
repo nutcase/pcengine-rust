@@ -13,8 +13,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     while frames < 10 && total_ticks < 5_000_000 {
         emu.tick();
         total_ticks += 1;
-        if emu.take_frame().is_some() { frames += 1; }
-        if emu.cpu.halted { break; }
+        if emu.take_frame().is_some() {
+            frames += 1;
+        }
+        if emu.cpu.halted {
+            break;
+        }
     }
 
     println!("=== After {} frames ===", frames);
@@ -24,7 +28,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     for i in 0..32 {
         let addr = 0xFB8Eu16.wrapping_add(i);
         print!("{:02X} ", emu.bus.read(addr));
-        if (i + 1) % 16 == 0 { println!(); }
+        if (i + 1) % 16 == 0 {
+            println!();
+        }
     }
     println!();
 
@@ -33,7 +39,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     for i in 0..64 {
         let addr = 0xFB8Fu16.wrapping_add(i);
         print!("{:02X} ", emu.bus.read(addr));
-        if (i + 1) % 16 == 0 { println!(); }
+        if (i + 1) % 16 == 0 {
+            println!();
+        }
     }
     println!();
 
@@ -42,7 +50,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     for i in 0..64 {
         let addr = 0xFE00u16.wrapping_add(i);
         print!("{:02X} ", emu.bus.read(addr));
-        if (i + 1) % 16 == 0 { println!(); }
+        if (i + 1) % 16 == 0 {
+            println!();
+        }
     }
     println!();
 
@@ -51,7 +61,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     for i in 0..64 {
         let addr = 0xFAF8u16.wrapping_add(i);
         print!("{:02X} ", emu.bus.read(addr));
-        if (i + 1) % 16 == 0 { println!(); }
+        if (i + 1) % 16 == 0 {
+            println!();
+        }
     }
     println!();
 
@@ -60,7 +72,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     for i in 0..32 {
         let addr = 0xFCBBu16.wrapping_add(i);
         print!("{:02X} ", emu.bus.read(addr));
-        if (i + 1) % 16 == 0 { println!(); }
+        if (i + 1) % 16 == 0 {
+            println!();
+        }
     }
     println!();
 
@@ -92,7 +106,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     for i in 0..64 {
         let addr = 0x4000u16 + i;
         print!("{:02X} ", emu.bus.read(addr));
-        if (i + 1) % 16 == 0 { println!(); }
+        if (i + 1) % 16 == 0 {
+            println!();
+        }
     }
     println!();
 

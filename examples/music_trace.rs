@@ -3,9 +3,9 @@ use pce::emulator::Emulator;
 use std::error::Error;
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let rom_path = std::env::args().nth(1).unwrap_or_else(|| {
-        "roms/Kato-chan & Ken-chan (Japan).pce".to_string()
-    });
+    let rom_path = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "roms/Kato-chan & Ken-chan (Japan).pce".to_string());
     let rom = std::fs::read(&rom_path)?;
     let mut emu = Emulator::new();
     emu.load_hucard(&rom)?;
@@ -15,8 +15,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut frames = 0u64;
     while frames < 200 {
         emu.tick();
-        if emu.take_frame().is_some() { frames += 1; }
-        if emu.cpu.halted { break; }
+        if emu.take_frame().is_some() {
+            frames += 1;
+        }
+        if emu.cpu.halted {
+            break;
+        }
     }
 
     // Dump work RAM at $2200-$2230 (music driver state)
@@ -66,15 +70,18 @@ fn main() -> Result<(), Box<dyn Error>> {
         // Check PSG state changes (approximation of writes)
         for ch in 0..6 {
             let info = emu.bus.psg_channel_info(ch);
-            if info.0 != prev_psg_state[ch].0 { // freq changed
+            if info.0 != prev_psg_state[ch].0 {
+                // freq changed
                 psg_freq_writes[ch] += 1;
                 total_psg_events += 1;
             }
-            if info.1 != prev_psg_state[ch].1 { // control changed
+            if info.1 != prev_psg_state[ch].1 {
+                // control changed
                 psg_ctrl_writes[ch] += 1;
                 total_psg_events += 1;
             }
-            if info.2 != prev_psg_state[ch].2 { // balance changed
+            if info.2 != prev_psg_state[ch].2 {
+                // balance changed
                 psg_bal_writes[ch] += 1;
                 total_psg_events += 1;
             }
@@ -87,18 +94,30 @@ fn main() -> Result<(), Box<dyn Error>> {
         if emu.take_frame().is_some() {
             frames += 1;
         }
-        if emu.cpu.halted { break; }
+        if emu.cpu.halted {
+            break;
+        }
     }
 
     let elapsed = (frames - start_frame) as f64 / 60.0;
-    println!("Total PSG state changes: {} ({:.1}/sec)", total_psg_events, total_psg_events as f64 / elapsed);
+    println!(
+        "Total PSG state changes: {} ({:.1}/sec)",
+        total_psg_events,
+        total_psg_events as f64 / elapsed
+    );
     println!("\nPer-channel stats (over {:.2}s):", elapsed);
     println!("CH  FreqChg  CtrlChg  BalChg   Total   /sec");
     for ch in 0..6 {
         let total = psg_changes[ch];
-        println!("{}   {:5}    {:5}    {:5}   {:5}   {:.1}",
-            ch, psg_freq_writes[ch], psg_ctrl_writes[ch], psg_bal_writes[ch],
-            total, total as f64 / elapsed);
+        println!(
+            "{}   {:5}    {:5}    {:5}   {:5}   {:.1}",
+            ch,
+            psg_freq_writes[ch],
+            psg_ctrl_writes[ch],
+            psg_bal_writes[ch],
+            total,
+            total as f64 / elapsed
+        );
     }
 
     // Dump final music state

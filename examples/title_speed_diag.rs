@@ -4,9 +4,9 @@ use pce::emulator::Emulator;
 use std::error::Error;
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let rom_path = std::env::args().nth(1).unwrap_or_else(|| {
-        "roms/Kato-chan & Ken-chan (Japan).pce".to_string()
-    });
+    let rom_path = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "roms/Kato-chan & Ken-chan (Japan).pce".to_string());
     let rom = std::fs::read(&rom_path)?;
     let mut emu = Emulator::new();
     emu.load_hucard(&rom)?;
@@ -68,11 +68,14 @@ fn main() -> Result<(), Box<dyn Error>> {
                 } else {
                     0.0
                 };
-                let mode = if frame_low_ticks > frame_high_ticks { "LOW" } else { "HIGH" };
+                let mode = if frame_low_ticks > frame_high_ticks {
+                    "LOW"
+                } else {
+                    "HIGH"
+                };
                 println!(
                     "{:5} | {:9.1}% | {:10} | {:11} | {:11} | {}",
-                    frames, high_pct, frame_timer_fires, tempo_counter_resets,
-                    reload, mode
+                    frames, high_pct, frame_timer_fires, tempo_counter_resets, reload, mode
                 );
 
                 // Reset per-second counters
@@ -83,13 +86,21 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
         }
 
-        if emu.cpu.halted { break; }
+        if emu.cpu.halted {
+            break;
+        }
     }
 
     let total = high_speed_ticks + low_speed_ticks;
     println!("\n=== Summary ===");
-    println!("Total ticks: {} (high: {}, low: {})", total, high_speed_ticks, low_speed_ticks);
-    println!("High speed: {:.1}%", high_speed_ticks as f64 / total as f64 * 100.0);
+    println!(
+        "Total ticks: {} (high: {}, low: {})",
+        total, high_speed_ticks, low_speed_ticks
+    );
+    println!(
+        "High speed: {:.1}%",
+        high_speed_ticks as f64 / total as f64 * 100.0
+    );
     println!("Total timer fires: {}", timer_fires);
 
     Ok(())

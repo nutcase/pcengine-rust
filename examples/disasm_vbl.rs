@@ -55,7 +55,10 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // --- Pass 2: Disassemble each JSR target subroutine ---
     for target in &jsr_targets {
-        println!("\n=== Subroutine at ${:04X} (called from VBlank ISR) ===", target);
+        println!(
+            "\n=== Subroutine at ${:04X} (called from VBlank ISR) ===",
+            target
+        );
         let mut sub_addr = *target;
         for _ in 0..60 {
             let op = emu.bus.read(sub_addr);
