@@ -7,17 +7,20 @@ DEFAULT_ROM="$ROOT_DIR/roms/Kato-chan & Ken-chan (Japan).pce"
 usage() {
     cat <<'EOF'
 Usage:
-  ./run.sh [--release] [rom_path]
+  ./run.sh [--debug] [rom_path]
 
 Examples:
   ./run.sh
   ./run.sh "roms/Kato-chan & Ken-chan (Japan).pce"
-  ./run.sh --release roms/sample_game.pce
+  ./run.sh --debug roms/sample_game.pce
 EOF
 }
 
-release_mode=0
-if [[ "${1:-}" == "--release" ]]; then
+release_mode=1
+if [[ "${1:-}" == "--debug" ]]; then
+    release_mode=0
+    shift
+elif [[ "${1:-}" == "--release" ]]; then
     release_mode=1
     shift
 fi
