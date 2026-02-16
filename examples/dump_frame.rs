@@ -55,7 +55,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     .ok()
                     .map_or(false, |v| v == "1");
                 if synth {
-                    synthesize_title(&mut frame);
+                    synthesize_title(&mut frame, emulator.display_width());
                 }
                 // Compute active display start from VDC timing
                 let vpr = emulator.bus.vdc_register(0x0C).unwrap_or(0);
@@ -65,12 +65,16 @@ fn main() -> Result<(), Box<dyn Error>> {
                 let frame_active_row = vsw + vds; // frame buffer row where active content begins
                 // VCE overscan color (sprite palette 0, index 0)
                 let overscan_color = emulator.bus.vce_palette_rgb(0x100);
+                let display_width = emulator.display_width();
+                let display_height = emulator.display_height();
                 write_ppm(
                     &frame,
                     &output_path,
                     vds_pad,
                     frame_active_row,
                     overscan_color,
+                    display_width,
+                    display_height,
                 )?;
                 println!("wrote frame {frame_target} to {output_path}");
                 println!(
@@ -156,71 +160,62 @@ fn write_ppm(
     _vds_pad: usize,
     _frame_active_row: usize,
     _overscan_rgb: u32,
+    width: usize,
+    height: usize,
 ) -> Result<(), Box<dyn Error>> {
-    const WIDTH: usize = 256;
-    const ACTIVE_HEIGHT: usize = 240;
-    const OUT_HEIGHT: usize = 224;
-
-    if frame.len() != WIDTH * ACTIVE_HEIGHT {
+    let expected = width * height;
+    if frame.len() != expected {
         return Err(format!(
-            "unexpected frame size: {} (expected {})",
+            "unexpected frame size: {} (expected {}x{}={})",
             frame.len(),
-            WIDTH * ACTIVE_HEIGHT
+            width,
+            height,
+            expected
         )
         .into());
     }
 
     let mut file = File::create(path)?;
-    writeln!(file, "P6\n{} {}\n255", WIDTH, OUT_HEIGHT)?;
+    writeln!(file, "P6\n{} {}\n255", width, height)?;
 
-    // The framebuffer already maps output rows 0..239 to active display
-    // rows via render_frame_from_vram(). Non-active rows (outside the VDC
-    // active window) are filled with overscan/background colour by the
-    // renderer.  We simply output the first OUT_HEIGHT rows (224 of 240),
-    // cropping 16 lines from the bottom.
-    for y in 0..OUT_HEIGHT {
-        if y >= ACTIVE_HEIGHT {
-            // Should not happen with OUT_HEIGHT=224 < ACTIVE_HEIGHT=240
-            for _ in 0..WIDTH {
-                file.write_all(&[0, 0, 0])?;
-            }
-        } else {
-            for x in 0..WIDTH {
-                let pixel = frame[y * WIDTH + x];
-                let r = ((pixel >> 16) & 0xFF) as u8;
-                let g = ((pixel >> 8) & 0xFF) as u8;
-                let b = (pixel & 0xFF) as u8;
-                file.write_all(&[r, g, b])?;
-            }
+    for y in 0..height {
+        for x in 0..width {
+            let pixel = frame[y * width + x];
+            let r = ((pixel >> 16) & 0xFF) as u8;
+            let g = ((pixel >> 8) & 0xFF) as u8;
+            let b = (pixel & 0xFF) as u8;
+            file.write_all(&[r, g, b])?;
         }
     }
     Ok(())
 }
 
-fn synthesize_title(frame: &mut [u32]) {
-    const WIDTH: usize = 256;
-    const HEIGHT: usize = 240;
-    if frame.len() != WIDTH * HEIGHT {
+fn synthesize_title(frame: &mut [u32], width: usize) {
+    if width == 0 {
+        return;
+    }
+    let height = frame.len() / width;
+    if frame.len() != width * height {
         return;
     }
     // シンプルな色帯とバーだけ描く（確実に可視）
-    for y in 0..HEIGHT {
+    for y in 0..height {
         let band = (y / 24) as u32;
         let base = 0x001020 + band * 0x020406;
-        for x in 0..WIDTH {
-            frame[y * WIDTH + x] = base;
+        for x in 0..width {
+            frame[y * width + x] = base;
         }
     }
     // 中央に太いバー
-    for y in 90..150 {
-        for x in 30..226 {
-            frame[y * WIDTH + x] = 0xFFD700;
+    for y in 90..150.min(height) {
+        for x in 30..226.min(width) {
+            frame[y * width + x] = 0xFFD700;
         }
     }
     // 下にもう一本
-    for y in 160..176 {
-        for x in 30..226 {
-            frame[y * WIDTH + x] = 0x304080;
+    for y in 160..176.min(height) {
+        for x in 30..226.min(width) {
+            frame[y * width + x] = 0x304080;
         }
     }
 }

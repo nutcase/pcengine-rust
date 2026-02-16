@@ -418,6 +418,18 @@ impl Emulator {
         self.bus.framebuffer()
     }
 
+    pub fn display_width(&self) -> usize {
+        self.bus.display_width()
+    }
+
+    pub fn display_height(&self) -> usize {
+        self.bus.display_height()
+    }
+
+    pub fn display_y_offset(&self) -> usize {
+        self.bus.display_y_offset()
+    }
+
     pub fn backup_ram(&self) -> Option<&[u8]> {
         self.bus.cart_ram()
     }

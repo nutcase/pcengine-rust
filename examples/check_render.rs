@@ -18,7 +18,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let pixels = last_frame.expect("should have a frame");
-    let width = 256;
+    let width = emu.display_width();
     let height = pixels.len() / width;
     println!("Frame: {}x{}", width, height);
 

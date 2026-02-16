@@ -23,7 +23,7 @@ const PHI_CYCLES_PER_SAMPLE: u32 = MASTER_CLOCK_HZ / AUDIO_SAMPLE_RATE;
 const PSG_CLOCK_HZ: u32 = MASTER_CLOCK_HZ / 2;
 const VDC_BUSY_ACCESS_CYCLES: u32 = 64;
 const VDC_DMA_WORD_CYCLES: u32 = 8;
-const FRAME_WIDTH: usize = 256;
+const FRAME_WIDTH: usize = 512; // internal stride (max 10 MHz width)
 const FRAME_HEIGHT: usize = 240;
 const FONT: [[u8; 10]; 96] = [
     [
@@ -456,6 +456,9 @@ pub struct Bus {
     framebuffer: Vec<u32>,
     frame_ready: bool,
     cart_ram: Vec<u8>,
+    current_display_width: usize,
+    current_display_height: usize,
+    current_display_y_offset: usize,
     bg_opaque: Vec<bool>,
     bg_priority: Vec<bool>,
     sprite_line_counts: Vec<u8>,
@@ -867,6 +870,9 @@ impl Bus {
             framebuffer: vec![0; FRAME_WIDTH * FRAME_HEIGHT],
             frame_ready: false,
             cart_ram: Vec::new(),
+            current_display_width: 256,
+            current_display_height: 224,
+            current_display_y_offset: 0,
             bg_opaque: vec![false; FRAME_WIDTH * FRAME_HEIGHT],
             bg_priority: vec![false; FRAME_WIDTH * FRAME_HEIGHT],
             sprite_line_counts: vec![0; FRAME_HEIGHT],
@@ -1633,11 +1639,24 @@ impl Bus {
         if Self::env_force_title_now() || Self::env_force_title_scene() {
             return Some(Self::synth_title_frame());
         }
-        Some(self.framebuffer.clone())
+        let w = self.current_display_width;
+        let h = self.current_display_height;
+        let y_off = self.current_display_y_offset;
+        let mut out = vec![0u32; w * h];
+        for y in 0..h {
+            let src_y = y + y_off;
+            if src_y >= FRAME_HEIGHT {
+                break;
+            }
+            let src = src_y * FRAME_WIDTH;
+            let dst = y * w;
+            out[dst..dst + w].copy_from_slice(&self.framebuffer[src..src + w]);
+        }
+        Some(out)
     }
 
     fn synth_title_frame() -> Vec<u32> {
-        const W: usize = FRAME_WIDTH;
+        const W: usize = 256;
         const H: usize = FRAME_HEIGHT;
         let mut fb = vec![0u32; W * H];
         // 背景グラデーション
@@ -1735,6 +1754,68 @@ impl Bus {
 
     pub fn framebuffer(&self) -> &[u32] {
         &self.framebuffer
+    }
+
+    fn compute_display_width(&self) -> usize {
+        let hdr = self.vdc.registers[0x0B];
+        let hdw = (hdr & 0x7F) as usize;
+        if hdw == 0 {
+            return 256;
+        }
+        ((hdw + 1) * 8).min(FRAME_WIDTH)
+    }
+
+    pub fn display_width(&self) -> usize {
+        self.current_display_width
+    }
+
+    fn compute_display_height(&self) -> (usize, usize) {
+        let timing_programmed = self.vdc.registers[0x0D] != 0
+            || self.vdc.registers[0x0E] != 0
+            || (self.vdc.registers[0x0C] & 0xFF00) != 0;
+        if !timing_programmed {
+            return (FRAME_HEIGHT, 0);
+        }
+        // Find the first and last active rows in the framebuffer.
+        // Non-active rows are overscan/blanking that we trim.
+        let mut first_active = FRAME_HEIGHT;
+        let mut last_active = 0usize;
+        for y in 0..FRAME_HEIGHT {
+            if self.vdc.output_row_in_active_window(y) {
+                if y < first_active {
+                    first_active = y;
+                }
+                last_active = y;
+            }
+        }
+        if first_active >= FRAME_HEIGHT {
+            return (FRAME_HEIGHT, 0);
+        }
+        let active_count = last_active - first_active + 1;
+        // CRT TVs display ~224 lines of the 240-line active area.
+        // NTSC CRTs have slightly more overscan at the top than the
+        // bottom (the beam starts before the visible area).  Round
+        // up the top crop to hide decoration/border pixels that
+        // games place near the overscan boundary (e.g. R-Type's
+        // score bar border at the top of the active region).
+        if active_count > 224 {
+            let crop = active_count - 224;
+            // Bias 1 extra line to the top: NTSC CRTs hide more at
+            // the top than the bottom, and games (e.g. R-Type) place
+            // HUD border pixels just past the symmetric crop boundary.
+            let top_crop = (crop / 2 + 1).min(crop);
+            (224, first_active + top_crop)
+        } else {
+            (active_count, first_active)
+        }
+    }
+
+    pub fn display_height(&self) -> usize {
+        self.current_display_height
+    }
+
+    pub fn display_y_offset(&self) -> usize {
+        self.current_display_y_offset
     }
 
     pub fn io_write_hist_top(&self, limit: usize) -> Vec<(u16, u64)> {
@@ -1916,6 +1997,16 @@ impl Bus {
 
     pub fn vdc_control_line(&self, line: usize) -> u16 {
         self.vdc.control_line(line)
+    }
+
+    pub fn enable_vdc_reg_trace(&mut self) {
+        self.vdc.reg_trace_enabled = true;
+        self.vdc.reg_trace.clear();
+    }
+
+    pub fn take_vdc_reg_trace(&mut self) -> Vec<(u16, u8, u16)> {
+        self.vdc.reg_trace_enabled = false;
+        std::mem::take(&mut self.vdc.reg_trace)
     }
 
     pub fn vdc_cram_last_source(&self) -> u16 {
@@ -2102,6 +2193,11 @@ impl Bus {
     }
 
     fn render_frame_from_vram(&mut self) {
+        let display_width = self.compute_display_width();
+        self.current_display_width = display_width;
+        let (display_height, y_offset) = self.compute_display_height();
+        self.current_display_height = display_height;
+        self.current_display_y_offset = y_offset;
         // NOTE: restore_bios_font_tiles() removed.
         // Games load their own fonts from ROM (e.g. Kato-chan Ken-chan at $E583).
         // The BIOS font restore was overwriting game fonts and is historically
@@ -2143,7 +2239,10 @@ impl Bus {
             // The VDC does not drive any pixel data; the display is blank
             // (black).  VCE[0] is NOT used here — the VDC simply outputs no
             // colour information in burst mode.
-            self.framebuffer[..FRAME_WIDTH * FRAME_HEIGHT].fill(0x000000);
+            for y in 0..FRAME_HEIGHT {
+                let row_start = y * FRAME_WIDTH;
+                self.framebuffer[row_start..row_start + display_width].fill(0x000000);
+            }
             self.frame_ready = true;
             return;
         }
@@ -2153,7 +2252,7 @@ impl Bus {
             let overscan_colour = self.vce.palette_rgb(0x100);
             for y in 0..FRAME_HEIGHT {
                 let row_start = y * FRAME_WIDTH;
-                let row_end = row_start + FRAME_WIDTH;
+                let row_end = row_start + display_width;
                 let colour = if active_window_line[y] {
                     background_colour
                 } else {
@@ -2201,7 +2300,7 @@ impl Bus {
         }
         if background_line_enabled.iter().any(|&enabled| enabled) {
             let mut tile_cache: Vec<TileSample> =
-                Vec::with_capacity((FRAME_WIDTH / TILE_WIDTH) + 2);
+                Vec::with_capacity((display_width / TILE_WIDTH) + 2);
             let (map_width_tiles, map_height_tiles) = self.vdc.map_dimensions();
             let map_width = Self::env_bg_map_width_override()
                 .unwrap_or(map_width_tiles)
@@ -2221,7 +2320,7 @@ impl Bus {
                 let line_state_index = self.vdc.line_state_index_for_frame_row(y);
                 if !background_line_enabled[y] {
                     let row_start = y * FRAME_WIDTH;
-                    let row_end = row_start + FRAME_WIDTH;
+                    let row_end = row_start + display_width;
                     let fill_colour = if !active_window_line[y] {
                         // Non-active window lines: overscan (black)
                         0x000000
@@ -2279,7 +2378,7 @@ impl Bus {
                 let line_in_tile = (sample_y % TILE_HEIGHT) as usize;
                 let start_sample_x = start_x_fp >> 4;
                 let start_tile_int = start_sample_x / TILE_WIDTH;
-                let end_sample_x_fp = start_x_fp + step_x * (FRAME_WIDTH - 1);
+                let end_sample_x_fp = start_x_fp + step_x * (display_width - 1);
                 let end_sample_x = (end_sample_x_fp >> 4) + 1;
                 let end_tile_int = (end_sample_x + TILE_WIDTH - 1) / TILE_WIDTH;
                 let mut tiles_needed = end_tile_int.saturating_sub(start_tile_int) + 2;
@@ -2347,7 +2446,7 @@ impl Bus {
 
                 let mut sample_x_fp = start_x_fp;
                 let start_tile_int = start_tile_int;
-                for x in 0..FRAME_WIDTH {
+                for x in 0..display_width {
                     let screen_index = y * FRAME_WIDTH + x;
                     let sample_x = (sample_x_fp >> 4) as usize;
                     let tile_idx_int = sample_x / TILE_WIDTH;
@@ -2557,7 +2656,7 @@ impl Bus {
 
             self.sprite_line_counts[dest_row] = slots_used;
 
-            for screen_x in 0..FRAME_WIDTH {
+            for screen_x in 0..self.current_display_width {
                 let offset = dest_row * FRAME_WIDTH + screen_x;
                 for sprite in line_sprites.iter() {
                     if (screen_x as i32) < sprite.x
@@ -3065,9 +3164,9 @@ impl Bus {
 
     fn refresh_vdc_irq(&mut self) {
         // Force DS/DV after many hardware writes (debug aid) or when env is set.
-        const FORCE_AFTER_WRITES: u64 = 5_000;
         #[cfg(debug_assertions)]
         {
+            const FORCE_AFTER_WRITES: u64 = 5_000;
             if self.debug_force_ds_after >= FORCE_AFTER_WRITES {
                 self.vdc.raise_status(VDC_STATUS_DS | VDC_STATUS_DV);
             }
@@ -3317,6 +3416,9 @@ struct Vdc {
     /// Debug: log the first N VRAM writes (address, value).
     vram_write_log: Vec<(u16, u16)>,
     vram_write_log_limit: usize,
+    /// Debug: log BYR/RCR/CR writes with scanline. (scanline, reg_index, value)
+    reg_trace: Vec<(u16, u8, u16)>,
+    reg_trace_enabled: bool,
     /// BIOS font tile patterns: 96 tiles (ASCII 0x20-0x7F), 16 VRAM words each.
     /// Stored separately so they can be restored when game graphics overwrites them.
     bios_font_tiles: Vec<[u16; 16]>,
@@ -3336,6 +3438,12 @@ struct Vdc {
     #[cfg(feature = "trace_hw_writes")]
     st0_hold_addr_hist: [u32; 0x100],
     st0_locked_until_commit: bool,
+    /// When an RCR interrupt fires, we latch pre-ISR state then break out of
+    /// the tick loop so the CPU can execute the ISR.  On re-entry, we re-latch
+    /// just the scroll/zoom/control arrays for the RCR scanline so that the
+    /// ISR's register changes (BYR, BXR, CR) take effect on that same line,
+    /// matching MAME's inline-ISR timing.
+    rcr_relatch_pending: Option<u16>,
 }
 
 pub const VDC_STATUS_CR: u8 = 0x01;
@@ -3442,6 +3550,8 @@ impl Vdc {
             mawr_log_end: 0,
             vram_write_log: Vec::new(),
             vram_write_log_limit: 0,
+            reg_trace: Vec::new(),
+            reg_trace_enabled: false,
             bios_font_tiles: Vec::new(),
             bios_font_dirty: false,
             ignore_next_high_byte: false,
@@ -3455,6 +3565,7 @@ impl Vdc {
             #[cfg(feature = "trace_hw_writes")]
             st0_hold_addr_hist: [0; 0x100],
             st0_locked_until_commit: false,
+            rcr_relatch_pending: None,
         };
         vdc.registers[0x04] = VDC_CTRL_ENABLE_BACKGROUND_LEGACY | VDC_CTRL_ENABLE_SPRITES_LEGACY;
         vdc.registers[0x05] = vdc.registers[0x04];
@@ -3782,15 +3893,50 @@ impl Vdc {
     }
 
     fn rcr_scanline_for_target(&self, target: u16) -> Option<u16> {
-        if ((VDC_ACTIVE_COUNTER_BASE as u16)..=0x0146).contains(&target) {
-            let window = self.vertical_window();
+        if target >= VDC_ACTIVE_COUNTER_BASE as u16 {
+            // MAME huc6270.cpp: the raster counter resets to 0x40 at the
+            // VSW→VDS transition (start of VDS period = line vsw+1).
+            // It increments each line during VDS/VDW/VCR.  At line S
+            // (S >= vsw+2), counter = 0x40 + (S − (vsw+1)).
+            // RCR match: counter == target ⇒ S = target − 0x40 + (vsw+1).
+            let vpr = self.registers[0x0C];
+            let vsw = (vpr & 0x001F) as usize;
+            let vds_start = vsw + 1; // first line of VDS period
             let relative = (target - VDC_ACTIVE_COUNTER_BASE as u16) as usize;
-            let line = (window.active_start_line + relative) % (LINES_PER_FRAME as usize);
-            Some(line as u16)
-        } else if target < LINES_PER_FRAME {
-            Some(target)
+            let line = (vds_start + relative) % (LINES_PER_FRAME as usize);
+            if line < LINES_PER_FRAME as usize {
+                Some(line as u16)
+            } else {
+                None
+            }
         } else {
             None
+        }
+    }
+
+    /// Re-latch scroll/zoom/control for a scanline whose RCR ISR has now
+    /// completed.  Called once per RCR event, just before the scanline
+    /// advances.  Updates bg_y_offset to account for the ISR's BYR write.
+    fn consume_post_isr_scroll(&mut self, line: usize) {
+        // After the CPU services an RCR ISR, consume any pending scroll/zoom
+        // writes so bg_y_offset is updated.  On real hardware the VDC has
+        // already started rendering the RCR scanline with the *pre-ISR*
+        // latch values, so we do NOT overwrite the scroll arrays for the
+        // current scanline.  Instead we only account for the h-sync
+        // BYR-latch increment that occurs at the end of this scanline:
+        // after apply_pending_scroll() resets bg_y_offset to 0, the
+        // active-line increment below brings it to 1, so the *next*
+        // scanline renders at BYR+1 (matching MAME's m_byr_latched
+        // semantics).
+        self.apply_pending_scroll();
+        self.apply_pending_zoom();
+
+        let window = self.vertical_window();
+        let is_active = !self.in_vblank
+            && line >= window.active_start_line
+            && line < window.vblank_start_line;
+        if is_active && self.bg_y_offset_loaded {
+            self.bg_y_offset = self.bg_y_offset.wrapping_add(1);
         }
     }
 
@@ -3817,21 +3963,27 @@ impl Vdc {
             }
             self.phi_scaled -= frame_cycles;
 
-            // If the previous iteration broke for RCR, the current scanline
-            // was not yet latched.  Latch it now — the CPU ISR has had a
-            // chance to modify BXR/BYR since the break, so the RCR scanline
-            // picks up the post-ISR scroll values.
-            {
-                let sl = self.scanline as usize;
-                if sl < self.scroll_line_valid.len() && !self.scroll_line_valid[sl] {
-                    self.latch_line_state(sl);
-                }
+            // If an RCR ISR was pending, the CPU has now executed it
+            // (a full scanline's worth of cycles elapsed for this loop
+            // iteration).  Consume the ISR's scroll/zoom writes and
+            // account for the h-sync BYR-latch increment, but keep
+            // the pre-ISR scroll state for the RCR scanline (the VDC
+            // has already rendered it with the old values).
+            if let Some(line) = self.rcr_relatch_pending.take() {
+                self.consume_post_isr_scroll(line as usize);
             }
 
             let wrapped = self.advance_scanline();
             if wrapped {
                 irq_recalc = true;
             }
+
+            // Latch line state with pre-ISR values.  If an RCR interrupt
+            // fires below, we record the scanline: once the CPU finishes
+            // the ISR (next tick()), consume_post_isr_scroll() accounts
+            // for the h-sync BYR-latch increment without overwriting the
+            // already-latched scroll for this scanline.
+            self.latch_line_state(self.scanline as usize);
 
             let rcr_target = self.registers[0x06] & 0x03FF;
             if let Some(rcr_scanline) = self.rcr_scanline_for_target(rcr_target) {
@@ -3844,17 +3996,12 @@ impl Vdc {
                     // an incorrect BYR value on the title screen.
                     if self.control() & 0x0004 != 0 {
                         self.raise_status(VDC_STATUS_RCR);
+                        self.rcr_relatch_pending = Some(self.scanline);
                         irq_recalc = true;
-                        // Break WITHOUT latching — the CPU ISR will modify
-                        // BXR/BYR, and we latch this scanline on re-entry
-                        // (see needs_latch check above).
                         break;
                     }
                 }
             }
-
-            // Normal path: latch line state for the new scanline.
-            self.latch_line_state(self.scanline as usize);
 
             // Trigger frame render at the LAST active scanline (one before
             // VBlank).  Games like Power League III write sprite pattern data
@@ -4160,6 +4307,9 @@ impl Vdc {
                 eprintln!("  TRACE R05 commit {:04X}", combined);
             }
         }
+        if self.reg_trace_enabled && matches!(index, 0x05 | 0x06 | 0x07 | 0x08) {
+            self.reg_trace.push((self.scanline, index as u8, combined));
+        }
         if index < self.registers.len() {
             let stored = if matches!(index, 0x00 | 0x01) {
                 combined & 0x7FFF
@@ -4210,6 +4360,8 @@ impl Vdc {
                 self.registers[0x08] = masked;
                 self.scroll_y_pending = masked;
                 self.scroll_y_dirty = true;
+                #[cfg(feature = "trace_hw_writes")]
+                eprintln!("  VDC BYR <= {:04X} (raw {:04X}) @ scanline {}", masked, combined, self.scanline);
             }
             0x0A => {
                 // HSR (Horizontal Sync Register) – timing only, not zoom.
@@ -6151,16 +6303,21 @@ mod tests {
     }
 
     #[test]
-    fn rcr_scanline_uses_active_counter_base_when_programmed() {
+    fn rcr_scanline_uses_vds_start_offset() {
         let mut vdc = Vdc::new();
+        // VPR: VSW=2 VDS=15 → vds_start = vsw+1 = 3
         vdc.registers[0x0C] = 0x0F02;
         vdc.registers[0x0D] = 0x00EF;
         vdc.registers[0x0E] = 0x0003;
 
-        assert_eq!(vdc.rcr_scanline_for_target(0x0040), Some(20));
-        assert_eq!(vdc.rcr_scanline_for_target(0x0063), Some(55));
-        // Legacy absolute-line path remains available for out-of-range values.
-        assert_eq!(vdc.rcr_scanline_for_target(0x0002), Some(2));
+        // target 0x40: counter just reset → line = 3 + 0 = 3 (VDS start)
+        assert_eq!(vdc.rcr_scanline_for_target(0x0040), Some(3));
+        // target 0x51: first active line → line = 3 + 17 = 20
+        assert_eq!(vdc.rcr_scanline_for_target(0x0051), Some(20));
+        // target 0x63: line = 3 + 35 = 38
+        assert_eq!(vdc.rcr_scanline_for_target(0x0063), Some(38));
+        // target below 0x40: counter never reaches these after reset
+        assert_eq!(vdc.rcr_scanline_for_target(0x0002), None);
     }
 
     #[test]
@@ -6683,7 +6840,7 @@ mod tests {
         }
 
         let frame = bus.take_frame().expect("expected frame after VBlank");
-        assert_eq!(frame.len(), FRAME_WIDTH * FRAME_HEIGHT);
+        assert_eq!(frame.len(), bus.display_width() * bus.display_height());
         // With both BG and SPR disabled the VDC is in burst mode — the screen
         // should be black (0x000000) regardless of VCE[0].
         assert!(frame.iter().all(|&pixel| pixel == 0x000000));
@@ -6744,7 +6901,7 @@ mod tests {
         }
 
         let frame = bus.take_frame().expect("expected frame");
-        assert_eq!(frame.len(), FRAME_WIDTH * FRAME_HEIGHT);
+        assert_eq!(frame.len(), bus.display_width() * bus.display_height());
         let colour1 = bus.vce_palette_rgb(0x11);
         let colour0 = bus.vce_palette_rgb(0x00);
         assert_eq!(frame[0], colour1);
@@ -6808,7 +6965,7 @@ mod tests {
         }
 
         let frame = bus.take_frame().expect("expected frame");
-        assert_eq!(frame.len(), FRAME_WIDTH * FRAME_HEIGHT);
+        assert_eq!(frame.len(), bus.display_width() * bus.display_height());
         let colour1 = bus.vce_palette_rgb(0x11);
         let colour0 = bus.vce_palette_rgb(0x00);
         assert_eq!(frame[0], colour1);
@@ -7045,7 +7202,7 @@ mod tests {
             "scrolled row 63 should appear at y=0"
         );
         assert_eq!(
-            frame[FRAME_WIDTH * TILE_HEIGHT],
+            frame[bus.display_width() * TILE_HEIGHT],
             bus.vce_palette_rgb(0x00),
             "next row should wrap to row 0 background"
         );
@@ -7718,11 +7875,13 @@ mod tests {
     #[test]
     fn vdc_rcr_irq_sets_irq1() {
         let mut bus = Bus::new();
+        // Enable RCR interrupt (CR bit 2).
         bus.write_st_port(0, 0x05);
         bus.write_st_port(1, 0x04);
         bus.write_st_port(2, 0x00);
+        // Set RCR target to 0x42 (valid: counter base 0x40 + 2 = scanline 3).
         bus.write_st_port(0, 0x06);
-        bus.write_st_port(1, 0x05);
+        bus.write_st_port(1, 0x42);
         bus.write_st_port(2, 0x00);
 
         assert_eq!(bus.pending_interrupts() & IRQ_REQUEST_IRQ1, 0);
@@ -7813,15 +7972,15 @@ mod tests {
         bus.write_st_port(0, 0x05);
         bus.write_st_port(1, 0x04);
         bus.write_st_port(2, 0x00);
-        // Set RCR target to scanline 2
+        // Set RCR target to 0x42 (counter base 0x40 + 2 → scanline 3).
         bus.write_st_port(0, 0x06);
-        bus.write_st_port(1, 0x02);
+        bus.write_st_port(1, 0x42);
         bus.write_st_port(2, 0x00);
 
         let line_cycles =
             (VDC_VBLANK_INTERVAL + LINES_PER_FRAME as u32 - 1) / LINES_PER_FRAME as u32;
-        let target_line = 0x0002usize;
-        for _ in 0..=target_line {
+        // Advance past scanline 3 to trigger the RCR.
+        for _ in 0..=4 {
             bus.tick(line_cycles, true);
         }
 

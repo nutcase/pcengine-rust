@@ -8,8 +8,6 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-const FRAME_WIDTH: usize = 256;
-const FRAME_HEIGHT: usize = 240;
 const SCALE: u32 = 3;
 const AUDIO_BATCH: usize = 512;
 const EMU_AUDIO_BATCH: usize = 128;
@@ -43,16 +41,21 @@ fn main() -> Result<(), String> {
     emulator.set_audio_batch_size(EMU_AUDIO_BATCH);
     emulator.reset();
 
+    let mut current_width = emulator.display_width();
+    let mut current_height = emulator.display_height();
+
+    // PC Engine outputs to a 4:3 CRT regardless of dot clock / pixel count.
+    // Window size is always 4:3, with height as reference.
+    let win_h = (current_height as u32) * SCALE;
+    let win_w = win_h * 4 / 3;
+
     let sdl = sdl2::init().map_err(|e| e.to_string())?;
     let audio = sdl.audio().map_err(|e| e.to_string())?;
     let video = sdl.video().map_err(|e| e.to_string())?;
     let window = video
-        .window(
-            "PC Engine (preview)",
-            (FRAME_WIDTH as u32) * SCALE,
-            (FRAME_HEIGHT as u32) * SCALE,
-        )
+        .window("PC Engine (preview)", win_w, win_h)
         .position_centered()
+        .resizable()
         .opengl()
         .build()
         .map_err(|e| e.to_string())?;
@@ -62,15 +65,12 @@ fn main() -> Result<(), String> {
         .accelerated()
         .build()
         .map_err(|e| e.to_string())?;
-    canvas
-        .set_scale(SCALE as f32, SCALE as f32)
-        .map_err(|e| e.to_string())?;
     let texture_creator = canvas.texture_creator();
     let mut texture = texture_creator
         .create_texture_streaming(
             PixelFormatEnum::RGB24,
-            FRAME_WIDTH as u32,
-            FRAME_HEIGHT as u32,
+            current_width as u32,
+            current_height as u32,
         )
         .map_err(|e| e.to_string())?;
     let desired_audio = AudioSpecDesired {
@@ -180,17 +180,41 @@ fn main() -> Result<(), String> {
             }
         }
 
+        // Check if display dimensions changed and recreate texture if so.
+        let new_width = emulator.display_width();
+        let new_height = emulator.display_height();
+        if new_width != current_width || new_height != current_height {
+            current_width = new_width;
+            current_height = new_height;
+            let h = (current_height as u32) * SCALE;
+            let w = h * 4 / 3;
+            canvas
+                .window_mut()
+                .set_size(w, h)
+                .map_err(|e| e.to_string())?;
+            texture = texture_creator
+                .create_texture_streaming(
+                    PixelFormatEnum::RGB24,
+                    current_width as u32,
+                    current_height as u32,
+                )
+                .map_err(|e| e.to_string())?;
+        }
+
         let queued = queued_samples(&audio_device);
         let should_present =
             queued >= AUDIO_QUEUE_CRITICAL || last_present.elapsed() >= MAX_PRESENT_INTERVAL;
         if should_present {
             if let Some(frame) = latest_frame.take() {
-                update_texture(&mut texture, &frame)?;
+                update_texture(&mut texture, &frame, current_width)?;
                 canvas.clear();
+                // Stretch texture to fill the window at 4:3 aspect ratio.
+                // SDL handles non-integer scaling via the dest rect.
+                let (win_w, win_h) = canvas.output_size().map_err(|e| e.to_string())?;
                 canvas.copy(
                     &texture,
                     None,
-                    Some(Rect::new(0, 0, FRAME_WIDTH as u32, FRAME_HEIGHT as u32)),
+                    Some(Rect::new(0, 0, win_w, win_h)),
                 )?;
                 canvas.present();
                 last_present = Instant::now();
@@ -228,10 +252,14 @@ fn queue_audio_samples(device: &AudioQueue<i16>, samples: &[i16]) -> Result<(), 
     }
 }
 
-fn update_texture(texture: &mut sdl2::render::Texture, frame: &[u32]) -> Result<(), String> {
+fn update_texture(
+    texture: &mut sdl2::render::Texture,
+    frame: &[u32],
+    width: usize,
+) -> Result<(), String> {
     texture.with_lock(None, |buffer, pitch| {
-        for (y, row) in frame.chunks(FRAME_WIDTH).enumerate() {
-            let dest = &mut buffer[y * pitch..y * pitch + FRAME_WIDTH * 3];
+        for (y, row) in frame.chunks(width).enumerate() {
+            let dest = &mut buffer[y * pitch..y * pitch + width * 3];
             for (pixel, chunk) in row.iter().zip(dest.chunks_mut(3)) {
                 let r = ((pixel >> 16) & 0xFF) as u8;
                 let g = ((pixel >> 8) & 0xFF) as u8;
