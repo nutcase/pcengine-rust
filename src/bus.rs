@@ -1795,19 +1795,12 @@ impl Bus {
             for y in 0..FRAME_HEIGHT {
                 let line_state_index = self.vdc.line_state_index_for_frame_row(y);
                 if !background_line_enabled[y] {
+                    // BG disabled on this line: fill black.
+                    // Covers overscan, burst mode (BG+SPR off), and
+                    // sprite-only lines (BG off, SPR on) during transitions.
                     let row_start = y * FRAME_WIDTH;
                     let row_end = row_start + display_width;
-                    let fill_colour = if !active_window_line[y] {
-                        // Non-active window lines: overscan (black)
-                        0x000000
-                    } else if !sprite_line_enabled[y] {
-                        // Burst mode (both BG+SPR disabled): black
-                        0x000000
-                    } else {
-                        // BG disabled but SPR enabled: VCE[0] background
-                        background_colour
-                    };
-                    self.framebuffer[row_start..row_end].fill(fill_colour);
+                    self.framebuffer[row_start..row_end].fill(0x000000);
                     continue;
                 }
                 let _active_row = self.vdc.active_row_for_output_row(y).unwrap_or(0);
@@ -1996,11 +1989,22 @@ impl Bus {
                 }
             }
         } else {
-            self.framebuffer.fill(background_colour);
+            // No BG-enabled lines — all black (burst mode / sprite-only transitions).
+            for y in 0..FRAME_HEIGHT {
+                let row_start = y * FRAME_WIDTH;
+                self.framebuffer[row_start..row_start + display_width].fill(0x000000);
+            }
         }
-        if sprite_line_enabled.iter().any(|&enabled| enabled) {
+        // Only render sprites when BG is active on at least one line.
+        // When BG is entirely off (scene transitions: burst → sprite-only),
+        // the game is still setting up VRAM/palette; rendering sprites here
+        // would flash partially-loaded content.  Once BG is re-enabled the
+        // scene is ready and sprites render normally.
+        let any_bg = background_line_enabled.iter().any(|&e| e);
+        if any_bg && sprite_line_enabled.iter().any(|&enabled| enabled) {
             self.render_sprites(&sprite_line_enabled);
         }
+
         self.frame_ready = true;
     }
 
@@ -2209,6 +2213,7 @@ impl Bus {
             self.vdc.raise_status(VDC_STATUS_OR);
         }
     }
+
     pub fn irq_pending(&self) -> bool {
         (self.interrupt_request & self.enabled_irq_mask()) != 0
     }
