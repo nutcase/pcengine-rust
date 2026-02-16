@@ -1,3 +1,29 @@
+use crate::psg::Psg;
+use crate::vce::Vce;
+use crate::vdc::{
+    Vdc,
+    VDC_REGISTER_COUNT, FRAME_WIDTH, FRAME_HEIGHT,
+    VDC_DMA_WORD_CYCLES,
+    TILE_WIDTH, TILE_HEIGHT, SPRITE_PATTERN_WIDTH, SPRITE_PATTERN_HEIGHT,
+    SPRITE_PATTERN_WORDS, SPRITE_COUNT,
+    VDC_CTRL_ENABLE_SPRITES_LEGACY, VDC_CTRL_ENABLE_BACKGROUND_LEGACY,
+    VDC_CTRL_ENABLE_BACKGROUND, VDC_CTRL_ENABLE_SPRITES,
+    DMA_CTRL_SRC_DEC, DMA_CTRL_DST_DEC,
+};
+#[cfg(test)]
+use crate::vdc::{
+    LINES_PER_FRAME, VDC_BUSY_ACCESS_CYCLES, VDC_VBLANK_INTERVAL,
+    DMA_CTRL_IRQ_SATB, DMA_CTRL_IRQ_VRAM, DMA_CTRL_SATB_AUTO,
+    VDC_VISIBLE_LINES,
+};
+
+// Re-export VDC status constants for external consumers (examples, etc.)
+// These were originally `pub const` in this file.
+pub use crate::vdc::{
+    VDC_STATUS_CR, VDC_STATUS_OR, VDC_STATUS_RCR,
+    VDC_STATUS_DS, VDC_STATUS_DV, VDC_STATUS_VBL, VDC_STATUS_BUSY,
+};
+
 pub const PAGE_SIZE: usize = 0x2000; // 8 KiB per bank
 const NUM_BANKS: usize = 8;
 const RAM_SIZE: usize = PAGE_SIZE * NUM_BANKS;
@@ -9,22 +35,14 @@ pub const IRQ_REQUEST_IRQ2: u8 = 0x01;
 pub const IRQ_REQUEST_IRQ1: u8 = 0x02;
 pub const IRQ_REQUEST_TIMER: u8 = 0x04;
 const TIMER_CONTROL_START: u8 = 0x01;
-const VDC_REGISTER_COUNT: usize = 32;
-const LINES_PER_FRAME: u16 = 263;
 const HW_TIMER_BASE: usize = 0x0C00;
 const HW_JOYPAD_BASE: usize = 0x1000;
 const HW_IRQ_BASE: usize = 0x1400;
 const HW_CPU_CTRL_BASE: usize = 0x1C00;
-const VDC_VBLANK_INTERVAL: u32 = 119_318; // ~7.16 MHz / 60 Hz
 const MASTER_CLOCK_HZ: u32 = 7_159_090;
 const AUDIO_SAMPLE_RATE: u32 = 44_100;
 #[cfg(test)]
 const PHI_CYCLES_PER_SAMPLE: u32 = MASTER_CLOCK_HZ / AUDIO_SAMPLE_RATE;
-const PSG_CLOCK_HZ: u32 = MASTER_CLOCK_HZ / 2;
-const VDC_BUSY_ACCESS_CYCLES: u32 = 64;
-const VDC_DMA_WORD_CYCLES: u32 = 8;
-const FRAME_WIDTH: usize = 512; // internal stride (max 10 MHz width)
-const FRAME_HEIGHT: usize = 240;
 const FONT: [[u8; 10]; 96] = [
     [
         0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000,
@@ -412,20 +430,6 @@ const FONT: [[u8; 10]; 96] = [
     ],
 ];
 
-const TILE_WIDTH: usize = 8;
-const TILE_HEIGHT: usize = 8;
-const SPRITE_PATTERN_WIDTH: usize = 16;
-const SPRITE_PATTERN_HEIGHT: usize = 16;
-const SPRITE_PATTERN_WORDS: usize = 64;
-const SPRITE_COUNT: usize = 64;
-const VDC_CTRL_ENABLE_SPRITES_LEGACY: u16 = 0x0040;
-const VDC_CTRL_ENABLE_BACKGROUND_LEGACY: u16 = 0x0080;
-const VDC_CTRL_ENABLE_BACKGROUND: u16 = 0x0100;
-const VDC_CTRL_ENABLE_SPRITES: u16 = 0x0200;
-// Note: HuC6270 register $0F (DCR) bits 0-1 are VRAM DMA / SATB DMA IRQ enables,
-// bits 2-3 are SID/DID, bit 4 is auto-SATB. CRAM DMA is not a standard HuC6270
-// feature — our emulator provides it as an internal utility triggered via
-// schedule_cram_dma().
 
 #[derive(Clone, Copy, bincode::Encode, bincode::Decode)]
 enum VdcPort {
@@ -481,117 +485,127 @@ pub struct Bus {
     st0_lock_window: u8,
 }
 
+/// Cached env-var flag: returns `true` when the env var is set (`.is_ok()`).
+macro_rules! env_bool {
+    ($name:ident, $var:expr) => {
+        #[inline]
+        fn $name() -> bool {
+            use std::sync::OnceLock;
+            static V: OnceLock<bool> = OnceLock::new();
+            *V.get_or_init(|| std::env::var($var).is_ok())
+        }
+    };
+}
+
+/// Cached env-var flag: returns `true` only when the env var is set to `"1"`.
+macro_rules! env_bool_eq1 {
+    ($name:ident, $var:expr) => {
+        #[inline]
+        fn $name() -> bool {
+            use std::sync::OnceLock;
+            static V: OnceLock<bool> = OnceLock::new();
+            *V.get_or_init(|| matches!(std::env::var($var), Ok(v) if v == "1"))
+        }
+    };
+}
+
+/// Cached env-var parsed as `i32` (decimal) with a default.
+macro_rules! env_i32 {
+    ($name:ident, $var:expr, $default:expr) => {
+        #[inline]
+        fn $name() -> i32 {
+            use std::sync::OnceLock;
+            static V: OnceLock<i32> = OnceLock::new();
+            *V.get_or_init(|| {
+                std::env::var($var)
+                    .ok()
+                    .and_then(|s| s.parse::<i32>().ok())
+                    .unwrap_or($default)
+            })
+        }
+    };
+}
+
+/// Cached env-var parsed as `Option<usize>` (with optional `> 0` filter).
+macro_rules! env_option_usize {
+    ($name:ident, $var:expr) => {
+        fn $name() -> Option<usize> {
+            use std::sync::OnceLock;
+            static V: OnceLock<Option<usize>> = OnceLock::new();
+            *V.get_or_init(|| {
+                std::env::var($var)
+                    .ok()
+                    .and_then(|s| s.parse::<usize>().ok())
+            })
+        }
+    };
+    ($name:ident, $var:expr, nonzero) => {
+        fn $name() -> Option<usize> {
+            use std::sync::OnceLock;
+            static V: OnceLock<Option<usize>> = OnceLock::new();
+            *V.get_or_init(|| {
+                std::env::var($var)
+                    .ok()
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .filter(|&v| v > 0)
+            })
+        }
+    };
+}
+
 impl Bus {
-    #[inline]
-    fn env_force_mpr1_hardware() -> bool {
-        use std::sync::OnceLock;
-        static FLAG: OnceLock<bool> = OnceLock::new();
-        *FLAG.get_or_init(|| std::env::var("PCE_FORCE_MPR1_HW").is_ok())
-    }
+    env_bool!(env_force_mpr1_hardware, "PCE_FORCE_MPR1_HW");
+    env_bool!(env_force_display_on,    "PCE_FORCE_DISPLAY_ON");
+    env_bool!(env_fold_io_02xx,        "PCE_FOLD_IO_02XX");
+    env_bool!(env_force_test_palette,  "PCE_FORCE_TEST_PALETTE");
+    env_bool!(env_vce_catchall,        "PCE_VCE_CATCHALL");
+    env_bool!(env_extreme_mirror,      "PCE_VDC_EXTREME_MIRROR");
+    env_bool!(env_vdc_ultra_mirror,    "PCE_VDC_ULTRA_MIRROR");
+    env_bool!(env_vdc_catchall,        "PCE_VDC_CATCHALL");
+    env_bool!(env_timer_default_start, "PCE_TIMER_DEFAULT_START");
+    env_bool!(env_force_palette_every_frame, "PCE_FORCE_PALETTE");
+    env_bool!(env_bg_bit_lsb,         "PCE_BG_BIT_LSB");
+    env_bool!(env_bg_swap_words,       "PCE_BG_SWAP_WORDS");
+    env_bool!(env_bg_swap_bytes,       "PCE_BG_SWAP_BYTES");
+    env_bool!(env_bg_plane_major,      "PCE_BG_PLANE_MAJOR");
+    env_bool!(env_bg_tile12,           "PCE_BG_TILE12");
+    env_bool!(env_bg_force_chr0_only,  "PCE_BG_CHR0_ONLY");
+    env_bool!(env_bg_force_chr1_only,  "PCE_BG_CHR1_ONLY");
+    env_bool!(env_bg_row_words,        "PCE_BG_ROW_WORDS");
+    env_bool!(env_bg_force_tile0_zero, "PCE_BG_TILE0_ZERO");
+    env_bool!(env_bg_palette_zero_visible, "PCE_BG_PAL0_VISIBLE");
+    env_bool!(env_sprite_reverse_priority, "PCE_SPR_REVERSE_PRIORITY");
+    env_bool!(env_no_sprite_line_limit, "PCE_NO_SPR_LINE_LIMIT");
+    env_bool!(env_sprite_pattern_raw_index, "PCE_SPR_PATTERN_RAW");
+    env_bool!(env_sprite_row_interleaved,   "PCE_SPR_ROW_INTERLEAVED");
+    env_bool!(env_force_timer,         "PCE_FORCE_TIMER");
+    env_bool!(env_force_vdc_dsdv,      "PCE_FORCE_VDC_DSDV");
+    env_bool!(env_force_irq1,          "PCE_FORCE_IRQ1");
+    env_bool!(env_force_irq2,          "PCE_FORCE_IRQ2");
+    env_bool!(env_debug_bg_only,       "PCE_DEBUG_BG_ONLY");
+    env_bool!(env_debug_spr_only,      "PCE_DEBUG_SPR_ONLY");
+    env_bool!(env_force_cram_from_vram, "PCE_FORCE_CRAM_FROM_VRAM");
 
-    #[inline]
-    fn env_force_display_on() -> bool {
-        use std::sync::OnceLock;
-        static FLAG: OnceLock<bool> = OnceLock::new();
-        *FLAG.get_or_init(|| std::env::var("PCE_FORCE_DISPLAY_ON").is_ok())
-    }
-
-    #[inline]
-    fn env_relax_io_mirror() -> bool {
-        use std::sync::OnceLock;
-        static FLAG: OnceLock<bool> = OnceLock::new();
-        *FLAG.get_or_init(|| matches!(std::env::var("PCE_RELAX_IO_MIRROR"), Ok(val) if val == "1"))
-    }
-
-    #[inline]
-    fn env_fold_io_02xx() -> bool {
-        use std::sync::OnceLock;
-        static FLAG: OnceLock<bool> = OnceLock::new();
-        *FLAG.get_or_init(|| std::env::var("PCE_FOLD_IO_02XX").is_ok())
-    }
-
-    #[inline]
-    fn env_vdc_busy_divisor() -> u32 {
-        use std::sync::OnceLock;
-        static DIV: OnceLock<u32> = OnceLock::new();
-        *DIV.get_or_init(|| {
-            std::env::var("PCE_VDC_BUSY_DIV")
-                .ok()
-                .and_then(|s| s.parse::<u32>().ok())
-                .filter(|&n| n > 0)
-                .unwrap_or(1)
-        })
-    }
-
-    #[inline]
-    fn env_force_test_palette() -> bool {
-        use std::sync::OnceLock;
-        static FLAG: OnceLock<bool> = OnceLock::new();
-        *FLAG.get_or_init(|| std::env::var("PCE_FORCE_TEST_PALETTE").is_ok())
-    }
-
-    #[inline]
-    fn env_vce_catchall() -> bool {
-        use std::sync::OnceLock;
-        static FLAG: OnceLock<bool> = OnceLock::new();
-        *FLAG.get_or_init(|| std::env::var("PCE_VCE_CATCHALL").is_ok())
-    }
-
-    #[inline]
     #[cfg(feature = "trace_hw_writes")]
-    fn env_trace_mpr() -> bool {
-        use std::sync::OnceLock;
-        static FLAG: OnceLock<bool> = OnceLock::new();
-        *FLAG.get_or_init(|| std::env::var("PCE_TRACE_MPR").is_ok())
-    }
+    env_bool!(env_trace_mpr, "PCE_TRACE_MPR");
 
-    #[inline]
-    fn env_extreme_mirror() -> bool {
-        use std::sync::OnceLock;
-        static FLAG: OnceLock<bool> = OnceLock::new();
-        *FLAG.get_or_init(|| std::env::var("PCE_VDC_EXTREME_MIRROR").is_ok())
-    }
+    env_bool_eq1!(env_relax_io_mirror,     "PCE_RELAX_IO_MIRROR");
+    env_bool_eq1!(env_force_title_now,     "PCE_FORCE_TITLE");
+    env_bool_eq1!(env_vdc_force_hot_ports, "PCE_VDC_FORCE_HOT");
+    env_bool_eq1!(env_force_title_scene,   "PCE_FORCE_TITLE_SCENE");
 
-    #[inline]
-    fn env_vdc_ultra_mirror() -> bool {
-        use std::sync::OnceLock;
-        static FLAG: OnceLock<bool> = OnceLock::new();
-        *FLAG.get_or_init(|| std::env::var("PCE_VDC_ULTRA_MIRROR").is_ok())
-    }
+    env_i32!(env_bg_y_bias, "PCE_BG_Y_BIAS", 0);
 
-    #[inline]
-    fn env_vdc_catchall() -> bool {
-        use std::sync::OnceLock;
-        static FLAG: OnceLock<bool> = OnceLock::new();
-        *FLAG.get_or_init(|| std::env::var("PCE_VDC_CATCHALL").is_ok())
-    }
+    env_option_usize!(env_bg_map_height_override, "PCE_BG_MAP_H_TILES", nonzero);
+    env_option_usize!(env_bg_map_width_override,  "PCE_BG_MAP_W_TILES", nonzero);
+    env_option_usize!(env_sprite_max_entries,      "PCE_SPR_MAX_ENTRIES");
 
-    #[inline]
-    fn env_force_title_now() -> bool {
-        use std::sync::OnceLock;
-        static FLAG: OnceLock<bool> = OnceLock::new();
-        *FLAG.get_or_init(|| matches!(std::env::var("PCE_FORCE_TITLE"), Ok(v) if v == "1"))
-    }
-
-    #[inline]
-    fn env_vdc_force_hot_ports() -> bool {
-        use std::sync::OnceLock;
-        static FLAG: OnceLock<bool> = OnceLock::new();
-        *FLAG.get_or_init(|| matches!(std::env::var("PCE_VDC_FORCE_HOT"), Ok(v) if v == "1"))
-    }
-
-    #[inline]
-    fn env_force_title_scene() -> bool {
-        use std::sync::OnceLock;
-        static FLAG: OnceLock<bool> = OnceLock::new();
-        *FLAG.get_or_init(|| matches!(std::env::var("PCE_FORCE_TITLE_SCENE"), Ok(v) if v == "1"))
-    }
-
+    // Special env helpers with custom parsing (hex u8, hex-or-decimal i32)
     #[inline]
     fn env_pad_default() -> u8 {
         use std::sync::OnceLock;
-        static PAD: OnceLock<u8> = OnceLock::new();
-        *PAD.get_or_init(|| {
+        static V: OnceLock<u8> = OnceLock::new();
+        *V.get_or_init(|| {
             std::env::var("PCE_PAD_DEFAULT")
                 .ok()
                 .and_then(|s| u8::from_str_radix(&s, 16).ok())
@@ -602,80 +616,18 @@ impl Bus {
     #[inline]
     fn env_irq_status_default() -> Option<u8> {
         use std::sync::OnceLock;
-        static VAL: OnceLock<Option<u8>> = OnceLock::new();
-        *VAL.get_or_init(|| {
+        static V: OnceLock<Option<u8>> = OnceLock::new();
+        *V.get_or_init(|| {
             std::env::var("PCE_IRQ_STATUS_DEFAULT")
                 .ok()
                 .and_then(|s| u8::from_str_radix(&s, 16).ok())
         })
     }
 
-    #[inline]
-    fn env_timer_default_start() -> bool {
-        use std::sync::OnceLock;
-        static FLAG: OnceLock<bool> = OnceLock::new();
-        *FLAG.get_or_init(|| std::env::var("PCE_TIMER_DEFAULT_START").is_ok())
-    }
-
-    #[inline]
-    fn env_force_palette_every_frame() -> bool {
-        use std::sync::OnceLock;
-        static FLAG: OnceLock<bool> = OnceLock::new();
-        *FLAG.get_or_init(|| std::env::var("PCE_FORCE_PALETTE").is_ok())
-    }
-
-    #[inline]
-    fn env_bg_y_bias() -> i32 {
-        use std::sync::OnceLock;
-        static BIAS: OnceLock<i32> = OnceLock::new();
-        *BIAS.get_or_init(|| {
-            std::env::var("PCE_BG_Y_BIAS")
-                .ok()
-                .and_then(|s| s.parse::<i32>().ok())
-                .unwrap_or(0)
-        })
-    }
-
-    #[inline]
-    fn env_bg_bit_lsb() -> bool {
-        use std::sync::OnceLock;
-        static FLAG: OnceLock<bool> = OnceLock::new();
-        *FLAG.get_or_init(|| std::env::var("PCE_BG_BIT_LSB").is_ok())
-    }
-
-    #[inline]
-    fn env_bg_swap_words() -> bool {
-        use std::sync::OnceLock;
-        static FLAG: OnceLock<bool> = OnceLock::new();
-        *FLAG.get_or_init(|| std::env::var("PCE_BG_SWAP_WORDS").is_ok())
-    }
-
-    #[inline]
-    fn env_bg_swap_bytes() -> bool {
-        use std::sync::OnceLock;
-        static FLAG: OnceLock<bool> = OnceLock::new();
-        *FLAG.get_or_init(|| std::env::var("PCE_BG_SWAP_BYTES").is_ok())
-    }
-
-    #[inline]
-    fn env_bg_plane_major() -> bool {
-        use std::sync::OnceLock;
-        static FLAG: OnceLock<bool> = OnceLock::new();
-        *FLAG.get_or_init(|| std::env::var("PCE_BG_PLANE_MAJOR").is_ok())
-    }
-
-    #[inline]
-    fn env_bg_tile12() -> bool {
-        use std::sync::OnceLock;
-        static FLAG: OnceLock<bool> = OnceLock::new();
-        *FLAG.get_or_init(|| std::env::var("PCE_BG_TILE12").is_ok())
-    }
-
-    #[inline]
     fn env_bg_map_base_bias() -> i32 {
         use std::sync::OnceLock;
-        static BIAS: OnceLock<i32> = OnceLock::new();
-        *BIAS.get_or_init(|| {
+        static V: OnceLock<i32> = OnceLock::new();
+        *V.get_or_init(|| {
             std::env::var("PCE_BG_MAP_BASE_BIAS")
                 .ok()
                 .and_then(|s| {
@@ -687,32 +639,10 @@ impl Bus {
         })
     }
 
-    #[inline]
-    fn env_bg_force_chr0_only() -> bool {
-        use std::sync::OnceLock;
-        static FLAG: OnceLock<bool> = OnceLock::new();
-        *FLAG.get_or_init(|| std::env::var("PCE_BG_CHR0_ONLY").is_ok())
-    }
-
-    #[inline]
-    fn env_bg_force_chr1_only() -> bool {
-        use std::sync::OnceLock;
-        static FLAG: OnceLock<bool> = OnceLock::new();
-        *FLAG.get_or_init(|| std::env::var("PCE_BG_CHR1_ONLY").is_ok())
-    }
-
-    #[inline]
-    fn env_bg_row_words() -> bool {
-        use std::sync::OnceLock;
-        static FLAG: OnceLock<bool> = OnceLock::new();
-        *FLAG.get_or_init(|| std::env::var("PCE_BG_ROW_WORDS").is_ok())
-    }
-
-    #[inline]
     fn env_bg_tile_base_bias() -> i32 {
         use std::sync::OnceLock;
-        static BIAS: OnceLock<i32> = OnceLock::new();
-        *BIAS.get_or_init(|| {
+        static V: OnceLock<i32> = OnceLock::new();
+        *V.get_or_init(|| {
             std::env::var("PCE_BG_TILE_BASE_BIAS")
                 .ok()
                 .and_then(|s| {
@@ -722,132 +652,6 @@ impl Bus {
                 })
                 .unwrap_or(0)
         })
-    }
-
-    #[inline]
-    fn env_bg_force_tile0_zero() -> bool {
-        use std::sync::OnceLock;
-        static FLAG: OnceLock<bool> = OnceLock::new();
-        *FLAG.get_or_init(|| std::env::var("PCE_BG_TILE0_ZERO").is_ok())
-    }
-
-    #[inline]
-    fn env_bg_palette_zero_visible() -> bool {
-        use std::sync::OnceLock;
-        static FLAG: OnceLock<bool> = OnceLock::new();
-        *FLAG.get_or_init(|| std::env::var("PCE_BG_PAL0_VISIBLE").is_ok())
-    }
-
-    fn env_bg_map_height_override() -> Option<usize> {
-        use std::sync::OnceLock;
-        static VALUE: OnceLock<Option<usize>> = OnceLock::new();
-        *VALUE.get_or_init(|| {
-            std::env::var("PCE_BG_MAP_H_TILES")
-                .ok()
-                .and_then(|s| s.parse::<usize>().ok())
-                .filter(|&v| v > 0)
-        })
-    }
-
-    fn env_bg_map_width_override() -> Option<usize> {
-        use std::sync::OnceLock;
-        static VALUE: OnceLock<Option<usize>> = OnceLock::new();
-        *VALUE.get_or_init(|| {
-            std::env::var("PCE_BG_MAP_W_TILES")
-                .ok()
-                .and_then(|s| s.parse::<usize>().ok())
-                .filter(|&v| v > 0)
-        })
-    }
-
-    #[inline]
-    fn env_sprite_reverse_priority() -> bool {
-        use std::sync::OnceLock;
-        static FLAG: OnceLock<bool> = OnceLock::new();
-        *FLAG.get_or_init(|| std::env::var("PCE_SPR_REVERSE_PRIORITY").is_ok())
-    }
-
-    #[inline]
-    fn env_no_sprite_line_limit() -> bool {
-        use std::sync::OnceLock;
-        static FLAG: OnceLock<bool> = OnceLock::new();
-        *FLAG.get_or_init(|| std::env::var("PCE_NO_SPR_LINE_LIMIT").is_ok())
-    }
-
-    #[inline]
-    fn env_sprite_pattern_raw_index() -> bool {
-        use std::sync::OnceLock;
-        static FLAG: OnceLock<bool> = OnceLock::new();
-        *FLAG.get_or_init(|| std::env::var("PCE_SPR_PATTERN_RAW").is_ok())
-    }
-
-    #[inline]
-    fn env_sprite_row_interleaved() -> bool {
-        use std::sync::OnceLock;
-        static FLAG: OnceLock<bool> = OnceLock::new();
-        *FLAG.get_or_init(|| std::env::var("PCE_SPR_ROW_INTERLEAVED").is_ok())
-    }
-
-    #[inline]
-    fn env_sprite_max_entries() -> Option<usize> {
-        use std::sync::OnceLock;
-        static VALUE: OnceLock<Option<usize>> = OnceLock::new();
-        *VALUE.get_or_init(|| {
-            std::env::var("PCE_SPR_MAX_ENTRIES")
-                .ok()
-                .and_then(|s| s.parse::<usize>().ok())
-        })
-    }
-
-    // --- Cached env flags for hot paths (called every tick) ---
-
-    #[inline]
-    fn env_force_timer() -> bool {
-        use std::sync::OnceLock;
-        static FLAG: OnceLock<bool> = OnceLock::new();
-        *FLAG.get_or_init(|| std::env::var("PCE_FORCE_TIMER").is_ok())
-    }
-
-    #[inline]
-    fn env_force_vdc_dsdv() -> bool {
-        use std::sync::OnceLock;
-        static FLAG: OnceLock<bool> = OnceLock::new();
-        *FLAG.get_or_init(|| std::env::var("PCE_FORCE_VDC_DSDV").is_ok())
-    }
-
-    #[inline]
-    fn env_force_irq1() -> bool {
-        use std::sync::OnceLock;
-        static FLAG: OnceLock<bool> = OnceLock::new();
-        *FLAG.get_or_init(|| std::env::var("PCE_FORCE_IRQ1").is_ok())
-    }
-
-    #[inline]
-    fn env_force_irq2() -> bool {
-        use std::sync::OnceLock;
-        static FLAG: OnceLock<bool> = OnceLock::new();
-        *FLAG.get_or_init(|| std::env::var("PCE_FORCE_IRQ2").is_ok())
-    }
-
-    #[inline]
-    fn env_debug_bg_only() -> bool {
-        use std::sync::OnceLock;
-        static FLAG: OnceLock<bool> = OnceLock::new();
-        *FLAG.get_or_init(|| std::env::var("PCE_DEBUG_BG_ONLY").is_ok())
-    }
-
-    #[inline]
-    fn env_debug_spr_only() -> bool {
-        use std::sync::OnceLock;
-        static FLAG: OnceLock<bool> = OnceLock::new();
-        *FLAG.get_or_init(|| std::env::var("PCE_DEBUG_SPR_ONLY").is_ok())
-    }
-
-    #[inline]
-    fn env_force_cram_from_vram() -> bool {
-        use std::sync::OnceLock;
-        static FLAG: OnceLock<bool> = OnceLock::new();
-        *FLAG.get_or_init(|| std::env::var("PCE_FORCE_CRAM_FROM_VRAM").is_ok())
     }
 
     pub fn new() -> Self {
@@ -1792,22 +1596,7 @@ impl Bus {
             return (FRAME_HEIGHT, 0);
         }
         let active_count = last_active - first_active + 1;
-        // CRT TVs display ~224 lines of the 240-line active area.
-        // NTSC CRTs have slightly more overscan at the top than the
-        // bottom (the beam starts before the visible area).  Round
-        // up the top crop to hide decoration/border pixels that
-        // games place near the overscan boundary (e.g. R-Type's
-        // score bar border at the top of the active region).
-        if active_count > 224 {
-            let crop = active_count - 224;
-            // Bias 1 extra line to the top: NTSC CRTs hide more at
-            // the top than the bottom, and games (e.g. R-Type) place
-            // HUD border pixels just past the symmetric crop boundary.
-            let top_crop = (crop / 2 + 1).min(crop);
-            (224, first_active + top_crop)
-        } else {
-            (active_count, first_active)
-        }
+        (active_count, first_active)
     }
 
     pub fn display_height(&self) -> usize {
@@ -3200,7 +2989,7 @@ impl Bus {
         words = words.min(0x200);
 
         let mut src = self.vdc.marr & 0x7FFF;
-        let mut index = (self.vce.address as usize) & 0x01FF;
+        let mut index = self.vce.address_index();
 
         for _ in 0..words {
             let word = *self.vdc.vram.get(src as usize).unwrap_or(&0);
@@ -3213,7 +3002,7 @@ impl Bus {
 
         self.vdc.marr = src & 0x7FFF;
         self.vdc.registers[0x01] = self.vdc.marr;
-        self.vce.address = index as u16;
+        self.vce.set_address(index as u16);
         let busy_cycles = (words as u32).saturating_mul(VDC_DMA_WORD_CYCLES);
         self.vdc.set_busy(busy_cycles);
         self.vdc.raise_status(VDC_STATUS_DV);
@@ -3328,2175 +3117,13 @@ struct Timer {
     enabled: bool,
 }
 
-#[derive(Clone, bincode::Encode, bincode::Decode)]
-struct Vdc {
-    registers: [u16; VDC_REGISTER_COUNT],
-    /// Per-register data latch (MAME's m_vdc_data).  ST1 writes the low byte
-    /// of `vdc_data[AR]`; ST2 writes the high byte and commits the full word.
-    /// Unlike `registers[]`, this is NOT overwritten by VRAM read/write side
-    /// effects, so interleaved writes to different registers work correctly.
-    vdc_data: [u16; VDC_REGISTER_COUNT],
-    vram: Vec<u16>,
-    satb: [u16; 0x100],
-    selected: u8,
-    latch_low: u8,
-    write_phase: VdcWritePhase,
-    read_phase: VdcReadPhase,
-    read_buffer: u16,
-    mawr: u16,
-    marr: u16,
-    status: u8,
-    phi_scaled: u64,
-    busy_cycles: u32,
-    scanline: u16,
-    dma_control: u16,
-    dma_source: u16,
-    dma_destination: u16,
-    satb_source: u16,
-    satb_pending: bool,
-    satb_written: bool,
-    in_vblank: bool,
-    frame_trigger: bool,
-    scroll_x: u16,
-    scroll_y: u16,
-    scroll_x_pending: u16,
-    scroll_y_pending: u16,
-    scroll_x_dirty: bool,
-    scroll_y_dirty: bool,
-    /// Number of active display lines since BYR was last loaded/written.
-    /// Reset to 0 at the first active scanline of each frame and on BYR writes.
-    bg_y_offset: u16,
-    bg_y_offset_loaded: bool,
-    zoom_x: u16,
-    zoom_y: u16,
-    zoom_x_pending: u16,
-    zoom_y_pending: u16,
-    zoom_x_dirty: bool,
-    zoom_y_dirty: bool,
-    scroll_line_x: [u16; LINES_PER_FRAME as usize],
-    scroll_line_y: [u16; LINES_PER_FRAME as usize],
-    /// Per-line BG Y offset (active lines since BYR was last set).
-    scroll_line_y_offset: [u16; LINES_PER_FRAME as usize],
-    zoom_line_x: [u16; LINES_PER_FRAME as usize],
-    zoom_line_y: [u16; LINES_PER_FRAME as usize],
-    control_line: [u16; LINES_PER_FRAME as usize],
-    scroll_line_valid: [bool; LINES_PER_FRAME as usize],
-    vram_dma_request: bool,
-    cram_pending: bool,
-    cram_dma_count: u64,
-    control_write_count: u64,
-    last_control_value: u16,
-    render_control_latch: u16,
-    last_cram_source: u16,
-    last_cram_length: u16,
-    vram_dma_count: u64,
-    last_vram_dma_source: u16,
-    last_vram_dma_destination: u16,
-    last_vram_dma_length: u16,
-    dcr_write_count: u64,
-    last_dcr_value: u8,
-    register_write_counts: [u64; VDC_REGISTER_COUNT],
-    register_select_counts: [u64; VDC_REGISTER_COUNT],
-    r05_low_writes: u64,
-    r05_high_writes: u64,
-    last_r05_low: u8,
-    r05_low_value_counts: [u64; 0x100],
-    r05_high_value_counts: [u64; 0x100],
-    vram_data_low_writes: u64,
-    vram_data_high_writes: u64,
-    vram_data_high_without_low: u64,
-    /// Track writes to a specific VRAM address range (for debugging font loading).
-    vram_write_range_count: u64,
-    vram_write_range_start: u16,
-    vram_write_range_end: u16,
-    /// Debug: log MAWR register set operations in a specified range.
-    mawr_log: Vec<u16>,
-    mawr_log_start: u16,
-    mawr_log_end: u16,
-    /// Debug: log the first N VRAM writes (address, value).
-    vram_write_log: Vec<(u16, u16)>,
-    vram_write_log_limit: usize,
-    /// Debug: log BYR/RCR/CR writes with scanline. (scanline, reg_index, value)
-    reg_trace: Vec<(u16, u8, u16)>,
-    reg_trace_enabled: bool,
-    /// BIOS font tile patterns: 96 tiles (ASCII 0x20-0x7F), 16 VRAM words each.
-    /// Stored separately so they can be restored when game graphics overwrites them.
-    bios_font_tiles: Vec<[u16; 16]>,
-    /// Set when VRAM writes hit the font tile area, signalling that font tiles
-    /// may need restoration before the next render.
-    bios_font_dirty: bool,
-    ignore_next_high_byte: bool,
-    // Remember which register a low byte targeted so the paired high byte
-    // commits to the same register even if ST0 is touched in between.
-    pending_write_register: Option<u8>,
-    #[cfg(feature = "trace_hw_writes")]
-    pending_traced_register: Option<u8>,
-    #[cfg(feature = "trace_hw_writes")]
-    last_io_addr: u16,
-    #[cfg(feature = "trace_hw_writes")]
-    st0_hold_counter: u8,
-    #[cfg(feature = "trace_hw_writes")]
-    st0_hold_addr_hist: [u32; 0x100],
-    st0_locked_until_commit: bool,
-    /// When an RCR interrupt fires, we latch pre-ISR state then break out of
-    /// the tick loop so the CPU can execute the ISR.  On re-entry, we re-latch
-    /// just the scroll/zoom/control arrays for the RCR scanline so that the
-    /// ISR's register changes (BYR, BXR, CR) take effect on that same line,
-    /// matching MAME's inline-ISR timing.
-    rcr_relatch_pending: Option<u16>,
-}
 
-pub const VDC_STATUS_CR: u8 = 0x01;
-pub const VDC_STATUS_OR: u8 = 0x02;
-pub const VDC_STATUS_RCR: u8 = 0x04;
-pub const VDC_STATUS_DS: u8 = 0x08;
-pub const VDC_STATUS_DV: u8 = 0x10;
-pub const VDC_STATUS_VBL: u8 = 0x20;
-pub const VDC_STATUS_BUSY: u8 = 0x40;
-const VDC_ACTIVE_COUNTER_BASE: usize = 0x40;
-const DMA_CTRL_IRQ_SATB: u16 = 0x0001;
-const DMA_CTRL_IRQ_VRAM: u16 = 0x0002;
-const DMA_CTRL_SRC_DEC: u16 = 0x0004;
-const DMA_CTRL_DST_DEC: u16 = 0x0008;
-const DMA_CTRL_SATB_AUTO: u16 = 0x0010;
-const VDC_VISIBLE_LINES: u16 = 240;
-const VDC_MAX_VBLANK_START_LINE: usize = (LINES_PER_FRAME as usize) - 2;
+// PSG constants and types are defined in src/psg.rs
+#[cfg(test)]
+use crate::psg::PSG_WAVE_SIZE;
+// Psg is defined in src/psg.rs
 
-#[derive(Clone, Copy, bincode::Encode, bincode::Decode)]
-struct VerticalWindow {
-    timing_programmed: bool,
-    active_start_line: usize,
-    active_line_count: usize,
-    post_active_overscan_lines: usize,
-    vblank_start_line: usize,
-}
-
-impl Vdc {
-    fn new() -> Self {
-        let mut vdc = Self {
-            registers: [0; VDC_REGISTER_COUNT],
-            vdc_data: [0; VDC_REGISTER_COUNT],
-            vram: vec![0; 0x8000],
-            satb: [0; 0x100],
-            selected: 0,
-            latch_low: 0,
-            write_phase: VdcWritePhase::Low,
-            read_phase: VdcReadPhase::Low,
-            read_buffer: 0,
-            mawr: 0,
-            marr: 0,
-            status: VDC_STATUS_VBL | VDC_STATUS_DS, // start inside VBlank with SATB DMA idle
-            phi_scaled: 0,
-            busy_cycles: 0,
-            scanline: LINES_PER_FRAME - 1,
-            dma_control: 0,
-            dma_source: 0,
-            dma_destination: 0,
-            satb_source: 0,
-            satb_pending: false,
-            satb_written: false,
-            in_vblank: true,
-            frame_trigger: false,
-            scroll_x: 0,
-            scroll_y: 0,
-            scroll_x_pending: 0,
-            scroll_y_pending: 0,
-            scroll_x_dirty: false,
-            scroll_y_dirty: false,
-            bg_y_offset: 0,
-            bg_y_offset_loaded: false,
-            zoom_x: 0x0010,
-            zoom_y: 0x0010,
-            zoom_x_pending: 0x0010,
-            zoom_y_pending: 0x0010,
-            zoom_x_dirty: false,
-            zoom_y_dirty: false,
-            scroll_line_x: [0; LINES_PER_FRAME as usize],
-            scroll_line_y: [0; LINES_PER_FRAME as usize],
-            scroll_line_y_offset: [0; LINES_PER_FRAME as usize],
-            zoom_line_x: [0; LINES_PER_FRAME as usize],
-            zoom_line_y: [0; LINES_PER_FRAME as usize],
-            control_line: [0; LINES_PER_FRAME as usize],
-            scroll_line_valid: [false; LINES_PER_FRAME as usize],
-            vram_dma_request: false,
-            cram_pending: false,
-            cram_dma_count: 0,
-            control_write_count: 0,
-            last_control_value: 0,
-            render_control_latch: 0,
-            last_cram_source: 0,
-            last_cram_length: 0,
-            vram_dma_count: 0,
-            last_vram_dma_source: 0,
-            last_vram_dma_destination: 0,
-            last_vram_dma_length: 0,
-            dcr_write_count: 0,
-            last_dcr_value: 0,
-            register_write_counts: [0; VDC_REGISTER_COUNT],
-            register_select_counts: [0; VDC_REGISTER_COUNT],
-            r05_low_writes: 0,
-            r05_high_writes: 0,
-            last_r05_low: 0,
-            r05_low_value_counts: [0; 0x100],
-            r05_high_value_counts: [0; 0x100],
-            vram_data_low_writes: 0,
-            vram_data_high_writes: 0,
-            vram_data_high_without_low: 0,
-            vram_write_range_count: 0,
-            vram_write_range_start: 0,
-            vram_write_range_end: 0,
-            mawr_log: Vec::new(),
-            mawr_log_start: 0,
-            mawr_log_end: 0,
-            vram_write_log: Vec::new(),
-            vram_write_log_limit: 0,
-            reg_trace: Vec::new(),
-            reg_trace_enabled: false,
-            bios_font_tiles: Vec::new(),
-            bios_font_dirty: false,
-            ignore_next_high_byte: false,
-            pending_write_register: None,
-            #[cfg(feature = "trace_hw_writes")]
-            pending_traced_register: None,
-            #[cfg(feature = "trace_hw_writes")]
-            last_io_addr: 0,
-            #[cfg(feature = "trace_hw_writes")]
-            st0_hold_counter: 0,
-            #[cfg(feature = "trace_hw_writes")]
-            st0_hold_addr_hist: [0; 0x100],
-            st0_locked_until_commit: false,
-            rcr_relatch_pending: None,
-        };
-        vdc.registers[0x04] = VDC_CTRL_ENABLE_BACKGROUND_LEGACY | VDC_CTRL_ENABLE_SPRITES_LEGACY;
-        vdc.registers[0x05] = vdc.registers[0x04];
-        vdc.last_control_value = vdc.registers[0x04];
-        vdc.render_control_latch = vdc.registers[0x04];
-        vdc.registers[0x09] = 0x0010; // default to 64x32 virtual map
-        vdc.registers[0x0A] = 0x0010;
-        vdc.registers[0x0B] = 0x0010;
-        vdc.refresh_activity_flags();
-        // Debug: optionally force status bits at power-on to unblock BIOS waits.
-        if let Some(mask) = std::env::var("PCE_FORCE_VDC_STATUS")
-            .ok()
-            .and_then(|s| u8::from_str_radix(&s, 16).ok())
-        {
-            vdc.status |= mask;
-        }
-        // 初期化直後は BUSY を確実に落としておく（リセット直後の BIOS 待ちループ対策）
-        vdc.status &= !VDC_STATUS_BUSY;
-        vdc
-    }
-
-    #[inline]
-    fn env_hold_dsdv() -> bool {
-        use std::sync::OnceLock;
-        static FLAG: OnceLock<bool> = OnceLock::new();
-        *FLAG.get_or_init(|| std::env::var("PCE_HOLD_DSDV").is_ok())
-    }
-
-    fn reset(&mut self) {
-        self.registers.fill(0);
-        self.vdc_data.fill(0);
-        self.vram.fill(0);
-        self.satb.fill(0);
-        self.selected = 0;
-        self.latch_low = 0;
-        self.write_phase = VdcWritePhase::Low;
-        self.read_phase = VdcReadPhase::Low;
-        self.read_buffer = 0;
-        self.mawr = 0;
-        self.marr = 0;
-        self.status = VDC_STATUS_VBL | VDC_STATUS_DS;
-        self.phi_scaled = 0;
-        self.busy_cycles = 0;
-        self.scanline = LINES_PER_FRAME - 1;
-        self.dma_control = 0;
-        self.dma_source = 0;
-        self.dma_destination = 0;
-        self.satb_source = 0;
-        self.satb_pending = false;
-        self.satb_written = false;
-        self.in_vblank = true;
-        self.frame_trigger = false;
-        self.registers[0x09] = 0x0010;
-        self.refresh_activity_flags();
-        self.status &= !VDC_STATUS_BUSY;
-        self.scroll_x = 0;
-        self.scroll_y = 0;
-        self.scroll_x_pending = 0;
-        self.scroll_y_pending = 0;
-        self.scroll_x_dirty = false;
-        self.scroll_y_dirty = false;
-        self.bg_y_offset = 0;
-        self.bg_y_offset_loaded = false;
-        self.zoom_x = 0x0010;
-        self.zoom_y = 0x0010;
-        self.zoom_x_pending = 0x0010;
-        self.zoom_y_pending = 0x0010;
-        self.zoom_x_dirty = false;
-        self.zoom_y_dirty = false;
-        self.scroll_line_x = [0; LINES_PER_FRAME as usize];
-        self.scroll_line_y = [0; LINES_PER_FRAME as usize];
-        self.zoom_line_x = [0; LINES_PER_FRAME as usize];
-        self.zoom_line_y = [0; LINES_PER_FRAME as usize];
-        self.control_line = [0; LINES_PER_FRAME as usize];
-        self.scroll_line_valid = [false; LINES_PER_FRAME as usize];
-        self.vram_dma_request = false;
-        self.cram_pending = false;
-        self.cram_dma_count = 0;
-        self.control_write_count = 0;
-        self.registers[0x04] = VDC_CTRL_ENABLE_BACKGROUND_LEGACY | VDC_CTRL_ENABLE_SPRITES_LEGACY;
-        self.registers[0x05] = self.registers[0x04];
-        self.last_control_value = self.registers[0x04];
-        self.render_control_latch = self.registers[0x04];
-        self.last_cram_source = 0;
-        self.last_cram_length = 0;
-        self.vram_dma_count = 0;
-        self.last_vram_dma_source = 0;
-        self.last_vram_dma_destination = 0;
-        self.last_vram_dma_length = 0;
-        self.dcr_write_count = 0;
-        self.last_dcr_value = 0;
-        self.register_write_counts = [0; VDC_REGISTER_COUNT];
-        self.register_select_counts = [0; VDC_REGISTER_COUNT];
-        self.r05_low_writes = 0;
-        self.r05_high_writes = 0;
-        self.last_r05_low = 0;
-        self.r05_low_value_counts = [0; 0x100];
-        self.r05_high_value_counts = [0; 0x100];
-        self.vram_data_low_writes = 0;
-        self.vram_data_high_writes = 0;
-        self.vram_data_high_without_low = 0;
-        self.vram_write_range_count = 0;
-        self.mawr_log.clear();
-        self.vram_write_log.clear();
-        self.vram_write_log_limit = 0;
-        self.pending_write_register = None;
-        self.registers[0x0A] = 0x0010;
-        self.registers[0x0B] = 0x0010;
-        self.ignore_next_high_byte = false;
-    }
-
-    fn read_status(&mut self) -> u8 {
-        self.refresh_activity_flags();
-        let value = self.status;
-        let preserved = self.status & VDC_STATUS_BUSY;
-        self.status = preserved;
-        #[cfg(feature = "trace_hw_writes")]
-        eprintln!(
-            "  VDC status -> {:02X} (VBL={} DS={} DV={} BUSY={} busy_cycles={})",
-            value,
-            (value & VDC_STATUS_VBL) != 0,
-            (value & VDC_STATUS_DS) != 0,
-            (value & VDC_STATUS_DV) != 0,
-            (value & VDC_STATUS_BUSY) != 0,
-            self.busy_cycles
-        );
-        value
-    }
-
-    #[allow(dead_code)]
-    fn raise_status(&mut self, mask: u8) {
-        self.status |= mask;
-    }
-
-    fn status_bits(&self) -> u8 {
-        self.status
-    }
-
-    fn control_write_count(&self) -> u64 {
-        self.control_write_count
-    }
-
-    fn last_control_value(&self) -> u16 {
-        self.last_control_value
-    }
-
-    fn r05_low_writes(&self) -> u64 {
-        self.r05_low_writes
-    }
-
-    fn r05_high_writes(&self) -> u64 {
-        self.r05_high_writes
-    }
-
-    fn last_r05_low(&self) -> u8 {
-        self.last_r05_low
-    }
-
-    fn r05_low_value_counts(&self) -> &[u64; 0x100] {
-        &self.r05_low_value_counts
-    }
-
-    fn r05_high_value_counts(&self) -> &[u64; 0x100] {
-        &self.r05_high_value_counts
-    }
-
-    fn vram_data_low_writes(&self) -> u64 {
-        self.vram_data_low_writes
-    }
-
-    fn vram_data_high_writes(&self) -> u64 {
-        self.vram_data_high_writes
-    }
-
-    fn vram_data_high_without_low(&self) -> u64 {
-        self.vram_data_high_without_low
-    }
-
-    fn satb_pending(&self) -> bool {
-        self.satb_written || self.satb_pending
-    }
-
-    fn satb_source(&self) -> u16 {
-        self.satb_source
-    }
-
-    fn clear_sprite_overflow(&mut self) {
-        self.status &= !VDC_STATUS_OR;
-    }
-
-    fn irq_active(&self) -> bool {
-        let mask = self.enabled_status_mask() | self.enabled_dma_status_mask();
-        (self.status & mask) != 0
-    }
-
-    fn enabled_status_mask(&self) -> u8 {
-        let ctrl = self.control();
-        let vbl_ctrl = if ctrl == 0 && (self.render_control_latch & 0x3000) != 0 {
-            self.render_control_latch
-        } else {
-            ctrl
-        };
-        let mut mask = 0;
-        if ctrl & 0x0001 != 0 {
-            mask |= VDC_STATUS_CR;
-        }
-        if ctrl & 0x0002 != 0 {
-            mask |= VDC_STATUS_OR;
-        }
-        if ctrl & 0x0004 != 0 {
-            mask |= VDC_STATUS_RCR;
-        }
-        if vbl_ctrl & 0x0008 != 0 || vbl_ctrl & 0x1000 != 0 || vbl_ctrl & 0x2000 != 0 {
-            mask |= VDC_STATUS_VBL;
-        }
-        mask
-    }
-
-    fn enabled_dma_status_mask(&self) -> u8 {
-        let mut mask = 0;
-        if self.dma_control & DMA_CTRL_IRQ_SATB != 0 {
-            mask |= VDC_STATUS_DS;
-        }
-        if self.dma_control & DMA_CTRL_IRQ_VRAM != 0 {
-            mask |= VDC_STATUS_DV;
-        }
-        mask
-    }
-
-    fn control(&self) -> u16 {
-        self.registers[0x04]
-    }
-
-    fn control_for_render(&self) -> u16 {
-        let current = self.control();
-        if current == 0 {
-            self.render_control_latch
-        } else {
-            current
-        }
-    }
-
-    fn vertical_window(&self) -> VerticalWindow {
-        let timing_programmed = self.registers[0x0D] != 0
-            || self.registers[0x0E] != 0
-            || (self.registers[0x0C] & 0xFF00) != 0;
-
-        if !timing_programmed {
-            return VerticalWindow {
-                timing_programmed: false,
-                active_start_line: 0,
-                active_line_count: VDC_VISIBLE_LINES as usize,
-                post_active_overscan_lines: 0,
-                vblank_start_line: VDC_VISIBLE_LINES as usize,
-            };
-        }
-
-        let lines_per_frame = LINES_PER_FRAME as usize;
-        let vpr = self.registers[0x0C];
-        let vsw = (vpr & 0x001F) as usize;
-        let vds = ((vpr >> 8) & 0x00FF) as usize;
-        let vdw = self.registers[0x0D];
-        let vcr = self.registers[0x0E];
-        // HuC6270 datasheet: VSW register = desired_value - 1,
-        // VDS register = desired_value - 2.  MAME huc6270.cpp uses
-        // (vsw + 1) + (vds + 2) for the first active scanline.
-        let active_start_line = (vsw + 1 + vds + 2) % lines_per_frame;
-        let active_line_count = ((vdw & 0x01FF) as usize)
-            .saturating_add(1)
-            .max(1)
-            .min(lines_per_frame);
-        let post_active_overscan_lines = 3usize.saturating_add((vcr & 0x00FF) as usize);
-        let vblank_start_line = active_start_line
-            .saturating_add(active_line_count)
-            .min(VDC_MAX_VBLANK_START_LINE)
-            .min(lines_per_frame.saturating_sub(1));
-
-        VerticalWindow {
-            timing_programmed: true,
-            active_start_line,
-            active_line_count,
-            post_active_overscan_lines,
-            vblank_start_line,
-        }
-    }
-
-    #[inline]
-    fn frame_line_for_output_row(&self, window: &VerticalWindow, row: usize) -> usize {
-        let lines_per_frame = LINES_PER_FRAME as usize;
-        if window.timing_programmed {
-            (window.active_start_line + row) % lines_per_frame
-        } else {
-            row % lines_per_frame
-        }
-    }
-
-    fn active_row_for_output_row(&self, row: usize) -> Option<usize> {
-        let window = self.vertical_window();
-        if !window.timing_programmed {
-            return (row < FRAME_HEIGHT).then_some(row);
-        }
-
-        let cycle_len = window
-            .active_start_line
-            .saturating_add(window.active_line_count)
-            .saturating_add(window.post_active_overscan_lines)
-            .max(1);
-        let cycle_pos = self.frame_line_for_output_row(&window, row) % cycle_len;
-        if cycle_pos < window.active_start_line {
-            return None;
-        }
-        let active_end = window.active_start_line + window.active_line_count;
-        if cycle_pos < active_end {
-            return Some(cycle_pos - window.active_start_line);
-        }
-        None
-    }
-
-    fn output_row_in_active_window(&self, row: usize) -> bool {
-        self.active_row_for_output_row(row).is_some()
-    }
-
-    fn vblank_start_scanline(&self) -> u16 {
-        self.vertical_window().vblank_start_line as u16
-    }
-
-    fn rcr_scanline_for_target(&self, target: u16) -> Option<u16> {
-        if target >= VDC_ACTIVE_COUNTER_BASE as u16 {
-            // MAME huc6270.cpp: the raster counter resets to 0x40 at the
-            // VSW→VDS transition (start of VDS period = line vsw+1).
-            // It increments each line during VDS/VDW/VCR.  At line S
-            // (S >= vsw+2), counter = 0x40 + (S − (vsw+1)).
-            // RCR match: counter == target ⇒ S = target − 0x40 + (vsw+1).
-            let vpr = self.registers[0x0C];
-            let vsw = (vpr & 0x001F) as usize;
-            let vds_start = vsw + 1; // first line of VDS period
-            let relative = (target - VDC_ACTIVE_COUNTER_BASE as u16) as usize;
-            let line = (vds_start + relative) % (LINES_PER_FRAME as usize);
-            if line < LINES_PER_FRAME as usize {
-                Some(line as u16)
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    }
-
-    /// Re-latch scroll/zoom/control for a scanline whose RCR ISR has now
-    /// completed.  Called once per RCR event, just before the scanline
-    /// advances.  Updates bg_y_offset to account for the ISR's BYR write.
-    fn consume_post_isr_scroll(&mut self, line: usize) {
-        // After the CPU services an RCR ISR, consume any pending scroll/zoom
-        // writes so bg_y_offset is updated.  On real hardware the VDC has
-        // already started rendering the RCR scanline with the *pre-ISR*
-        // latch values, so we do NOT overwrite the scroll arrays for the
-        // current scanline.  Instead we only account for the h-sync
-        // BYR-latch increment that occurs at the end of this scanline:
-        // after apply_pending_scroll() resets bg_y_offset to 0, the
-        // active-line increment below brings it to 1, so the *next*
-        // scanline renders at BYR+1 (matching MAME's m_byr_latched
-        // semantics).
-        self.apply_pending_scroll();
-        self.apply_pending_zoom();
-
-        let window = self.vertical_window();
-        let is_active = !self.in_vblank
-            && line >= window.active_start_line
-            && line < window.vblank_start_line;
-        if is_active && self.bg_y_offset_loaded {
-            self.bg_y_offset = self.bg_y_offset.wrapping_add(1);
-        }
-    }
-
-    fn tick(&mut self, phi_cycles: u32) -> bool {
-        if phi_cycles == 0 {
-            return false;
-        }
-
-        self.consume_busy(phi_cycles);
-
-        let frame_cycles = VDC_VBLANK_INTERVAL as u64;
-        self.phi_scaled = self
-            .phi_scaled
-            .saturating_add(phi_cycles as u64 * LINES_PER_FRAME as u64);
-
-        let mut irq_recalc = false;
-        while self.phi_scaled >= frame_cycles {
-            // Preserve per-frame line latches until the renderer consumes this frame.
-            // Some HuC6280 instructions run long enough to cover many scanlines; if
-            // we march past VBlank start in one call, line-state snapshots can be
-            // overwritten before render_frame_from_vram() runs.
-            if self.frame_trigger {
-                break;
-            }
-            self.phi_scaled -= frame_cycles;
-
-            // If an RCR ISR was pending, the CPU has now executed it
-            // (a full scanline's worth of cycles elapsed for this loop
-            // iteration).  Consume the ISR's scroll/zoom writes and
-            // account for the h-sync BYR-latch increment, but keep
-            // the pre-ISR scroll state for the RCR scanline (the VDC
-            // has already rendered it with the old values).
-            if let Some(line) = self.rcr_relatch_pending.take() {
-                self.consume_post_isr_scroll(line as usize);
-            }
-
-            let wrapped = self.advance_scanline();
-            if wrapped {
-                irq_recalc = true;
-            }
-
-            // Latch line state with pre-ISR values.  If an RCR interrupt
-            // fires below, we record the scanline: once the CPU finishes
-            // the ISR (next tick()), consume_post_isr_scroll() accounts
-            // for the h-sync BYR-latch increment without overwriting the
-            // already-latched scroll for this scanline.
-            self.latch_line_state(self.scanline as usize);
-
-            let rcr_target = self.registers[0x06] & 0x03FF;
-            if let Some(rcr_scanline) = self.rcr_scanline_for_target(rcr_target) {
-                if self.scanline == rcr_scanline {
-                    // Per HuC6270 hardware (confirmed by MAME): the RR status
-                    // flag is only raised when CR bit 2 (RCR interrupt enable)
-                    // is set.  Games like Kato-chan & Ken-chan rely on this —
-                    // the ISR checks the RR bit to decide whether to apply a
-                    // scroll offset, so raising it unconditionally would cause
-                    // an incorrect BYR value on the title screen.
-                    if self.control() & 0x0004 != 0 {
-                        self.raise_status(VDC_STATUS_RCR);
-                        self.rcr_relatch_pending = Some(self.scanline);
-                        irq_recalc = true;
-                        break;
-                    }
-                }
-            }
-
-            // Trigger frame render at the LAST active scanline (one before
-            // VBlank).  Games like Power League III write sprite pattern data
-            // to VRAM during active display; rendering at VBlank start would
-            // miss those writes.  By deferring the trigger to the end of
-            // active display, the batch renderer captures all mid-frame VRAM
-            // updates while per-line scroll/control state is still intact.
-            let vbl = self.vblank_start_scanline();
-            if !self.in_vblank && !self.frame_trigger && vbl > 0
-                && self.scanline == vbl - 1
-            {
-                self.frame_trigger = true;
-                break;
-            }
-
-            if self.scanline == vbl {
-                self.in_vblank = true;
-                self.raise_status(VDC_STATUS_VBL);
-                self.refresh_activity_flags();
-                irq_recalc = true;
-                if self.handle_vblank_start() {
-                    irq_recalc = true;
-                }
-                break;
-            }
-        }
-
-        irq_recalc
-    }
-
-    fn frame_ready(&self) -> bool {
-        self.frame_trigger
-    }
-
-    fn clear_frame_trigger(&mut self) {
-        self.frame_trigger = false;
-    }
-
-    fn set_busy(&mut self, cycles: u32) {
-        let divisor = Bus::env_vdc_busy_divisor().max(1);
-        let scaled = if divisor == 1 {
-            cycles
-        } else {
-            cycles / divisor
-        };
-        self.busy_cycles = self.busy_cycles.max(scaled);
-        self.refresh_activity_flags();
-    }
-
-    fn consume_busy(&mut self, phi_cycles: u32) {
-        if self.busy_cycles > 0 {
-            if phi_cycles >= self.busy_cycles {
-                self.busy_cycles = 0;
-            } else {
-                self.busy_cycles -= phi_cycles;
-            }
-        }
-        self.refresh_activity_flags();
-    }
-
-    fn refresh_activity_flags(&mut self) {
-        if self.busy_cycles > 0 {
-            self.status |= VDC_STATUS_BUSY;
-        } else {
-            self.status &= !VDC_STATUS_BUSY;
-        }
-    }
-
-    fn write_port(&mut self, port: usize, value: u8) {
-        match port {
-            0 => self.write_select(value),
-            1 => self.write_data_low(value),
-            2 => self.write_data_high_direct(value),
-            _ => {}
-        }
-    }
-
-    fn read_port(&mut self, port: usize) -> u8 {
-        match port {
-            0 => self.read_status(),
-            1 => self.read_data_low(),
-            2 => self.read_data_high(),
-            _ => 0,
-        }
-    }
-
-    fn selected_register(&self) -> u8 {
-        self.map_register_index(self.selected & 0x1F)
-    }
-
-    fn map_register_index(&self, raw: u8) -> u8 {
-        match raw {
-            0x03 => 0x04, // CR (control) -> internal alias at 0x04/0x05
-            _ => raw,
-        }
-    }
-
-    fn register(&self, index: usize) -> Option<u16> {
-        self.registers.get(index).copied()
-    }
-
-    fn register_write_count(&self, index: usize) -> u64 {
-        self.register_write_counts.get(index).copied().unwrap_or(0)
-    }
-
-    fn register_select_count(&self, index: usize) -> u64 {
-        self.register_select_counts.get(index).copied().unwrap_or(0)
-    }
-
-    fn write_select(&mut self, value: u8) {
-        let new_sel = value & 0x1F;
-        // Keep the low-byte target latched across ST0 writes until the paired
-        // high-byte commit completes.
-        if !self.st0_locked_until_commit {
-            self.pending_write_register = None;
-        }
-        #[cfg(feature = "trace_hw_writes")]
-        if new_sel == 0x05 {
-            eprintln!("  TRACE select R05 (pc={:04X})", 0);
-        }
-        self.selected = new_sel;
-        self.write_phase = VdcWritePhase::Low;
-        self.ignore_next_high_byte = false;
-        let index = self.map_register_index(self.selected) as usize;
-        if let Some(count) = self.register_select_counts.get_mut(index) {
-            *count = count.saturating_add(1);
-        }
-        #[cfg(feature = "trace_hw_writes")]
-        eprintln!(
-            "  VDC select {:02X} pending={:?} phase={:?}",
-            self.selected, self.pending_write_register, self.write_phase
-        );
-    }
-
-    fn write_data_low(&mut self, value: u8) {
-        let index = self.selected_register() as usize;
-        self.latch_low = value;
-        self.pending_write_register = Some(self.selected_register());
-        self.st0_locked_until_commit = true;
-
-        // Per-register data latch (MAME m_vdc_data): ST1 writes the low byte
-        // of the CURRENTLY SELECTED register.  This is per-register, so
-        // interleaved ST1 writes to different registers don't clobber each
-        // other's low bytes.
-        if index < self.vdc_data.len() {
-            self.vdc_data[index] = (self.vdc_data[index] & 0xFF00) | value as u16;
-        }
-
-        if self.pending_write_register == Some(0x02) {
-            self.vram_data_low_writes = self.vram_data_low_writes.saturating_add(1);
-        }
-        if matches!(self.selected_register(), 0x04 | 0x05) {
-            self.r05_low_writes = self.r05_low_writes.saturating_add(1);
-            self.last_r05_low = value;
-            if let Some(slot) = self.r05_low_value_counts.get_mut(value as usize) {
-                *slot = slot.saturating_add(1);
-            }
-        }
-        #[cfg(feature = "trace_hw_writes")]
-        {
-            let reg = self.selected_register();
-            if matches!(reg, 0x04 | 0x05) {
-                eprintln!("  TRACE R05 low {:02X}", value);
-            } else if matches!(reg, 0x10 | 0x11 | 0x12) {
-                eprintln!("  TRACE DMA reg {:02X} low {:02X}", reg, value);
-            }
-        }
-        #[cfg(feature = "trace_hw_writes")]
-        eprintln!(
-            "  VDC low byte {:02X} latched for R{:02X} pending={:?} phase={:?}",
-            value,
-            self.selected_register(),
-            self.pending_write_register,
-            self.write_phase
-        );
-        if matches!(index, 0x02 | 0x0A | 0x0B | 0x0C | 0x12 | 0x14) {
-            // HuC6270: these registers only commit on the high-byte write
-            // (ST2).  $02 (VWR) must wait for both bytes before VRAM write;
-            // $12 (LENR) must wait before starting DMA.  Timing registers
-            // ($0A/$0B/$0C) also defer for safety.
-            self.write_phase = VdcWritePhase::High;
-            self.ignore_next_high_byte = false;
-        } else {
-            // MAME's COMBINE_DATA merges each byte into the register
-            // immediately.  Registers like DCR ($0F) and DVSSR ($13)
-            // have side effects (auto-SATB enable, DMA scheduling) that
-            // must fire on low-byte-only writes — games such as
-            // Bikkuriman World write DCR via ST1 without a following ST2.
-            let existing = self.registers.get(index).copied().unwrap_or(0);
-            let combined = (existing & 0xFF00) | value as u16;
-            self.commit_register_write(index, combined);
-            self.write_phase = VdcWritePhase::High;
-            self.ignore_next_high_byte = false;
-        }
-    }
-
-    fn write_data_high(&mut self, value: u8) {
-        // HuC6270: the address register (AR) at the time of the ST2 write
-        // determines which VDC register receives the 16-bit value.  The
-        // pending_write_register is only used to detect whether a low-byte
-        // latch is available (i.e. ST1 preceded this ST2).
-        let use_latch = matches!(self.write_phase, VdcWritePhase::High)
-            && self.pending_write_register.is_some();
-        if use_latch && self.ignore_next_high_byte {
-            self.write_phase = VdcWritePhase::Low;
-            self.ignore_next_high_byte = false;
-            self.pending_write_register = None;
-            return;
-        }
-        // Per-register data latch (MAME m_vdc_data): ST2 writes the high
-        // byte of the CURRENTLY SELECTED register, then commits the full
-        // 16-bit word.  The low byte was stored by the previous ST1 for
-        // this register and is NOT affected by intervening ST1 writes to
-        // other registers.
-        let index = self.selected_register() as usize;
-        if index < self.vdc_data.len() {
-            self.vdc_data[index] = (self.vdc_data[index] & 0x00FF) | ((value as u16) << 8);
-        }
-        let combined = self.vdc_data.get(index).copied().unwrap_or(
-            u16::from_le_bytes([self.latch_low, value])
-        );
-        // Always use the CURRENT AR for the commit target — this matches
-        // real HuC6270 behaviour where AR at ST2 time selects the register.
-        let index = self.selected_register() as usize;
-        self.pending_write_register = None;
-        if index == 0x02 {
-            self.vram_data_high_writes = self.vram_data_high_writes.saturating_add(1);
-            if !use_latch {
-                self.vram_data_high_without_low = self.vram_data_high_without_low.saturating_add(1);
-            }
-        }
-        self.st0_locked_until_commit = false;
-        #[cfg(feature = "trace_hw_writes")]
-        {
-            self.st0_hold_counter = 0;
-        }
-        if index == 0x04 || index == 0x05 {
-            self.r05_high_writes = self.r05_high_writes.saturating_add(1);
-            if let Some(slot) = self.r05_high_value_counts.get_mut(value as usize) {
-                *slot = slot.saturating_add(1);
-            }
-        }
-        #[cfg(feature = "trace_hw_writes")]
-        {
-            if index == 0x04 || index == 0x05 {
-                eprintln!("  TRACE R05 high {:02X} commit {:04X}", value, combined);
-            } else if matches!(index, 0x10 | 0x11 | 0x12) {
-                eprintln!(
-                    "  TRACE DMA reg {:02X} high {:02X} commit {:04X}",
-                    index, value, combined
-                );
-            }
-            self.debug_log_select_and_value(index as u8, combined);
-        }
-        #[cfg(feature = "trace_hw_writes")]
-        eprintln!(
-            "  VDC high byte {:02X} -> commit R{:02X} = {:04X} (selected={:02X} pending={:?} phase={:?})",
-            value,
-            index,
-            combined,
-            self.selected_register(),
-            self.pending_write_register,
-            self.write_phase
-        );
-        self.commit_register_write(index, combined);
-        self.write_phase = VdcWritePhase::Low;
-        if Self::env_hold_dsdv() {
-            self.status |= VDC_STATUS_DS | VDC_STATUS_DV;
-        }
-    }
-
-    fn write_data_high_direct(&mut self, value: u8) {
-        if !matches!(self.write_phase, VdcWritePhase::High) {
-            self.write_phase = VdcWritePhase::High;
-            self.ignore_next_high_byte = false;
-        }
-        self.write_data_high(value);
-    }
-
-    #[cfg(feature = "trace_hw_writes")]
-    fn debug_log_select_and_value(&self, reg: u8, value: u16) {
-        if matches!(reg, 0x04 | 0x05 | 0x10 | 0x11 | 0x12) {
-            eprintln!("  TRACE commit R{:02X} = {:04X}", reg, value);
-        }
-    }
-
-    fn take_vram_dma_request(&mut self) -> bool {
-        let pending = self.vram_dma_request;
-        self.vram_dma_request = false;
-        pending
-    }
-
-    fn commit_register_write(&mut self, index: usize, combined: u16) {
-        #[cfg(feature = "trace_hw_writes")]
-        {
-            eprintln!(
-                "  VDC write R{:02X} = {:04X} (sel={:02X})",
-                index,
-                combined,
-                self.selected_register()
-            );
-            if index == 0x05 {
-                eprintln!("  TRACE R05 commit {:04X}", combined);
-            }
-        }
-        if self.reg_trace_enabled && matches!(index, 0x05 | 0x06 | 0x07 | 0x08) {
-            self.reg_trace.push((self.scanline, index as u8, combined));
-        }
-        if index < self.registers.len() {
-            let stored = if matches!(index, 0x00 | 0x01) {
-                combined & 0x7FFF
-            } else {
-                combined
-            };
-            self.registers[index] = stored;
-            if let Some(count) = self.register_write_counts.get_mut(index) {
-                *count = count.saturating_add(1);
-            }
-        }
-        match index {
-            0x00 => {
-                self.mawr = combined & 0x7FFF;
-                self.registers[0x00] = self.mawr;
-                // MAWR log
-                if self.mawr >= self.mawr_log_start && self.mawr < self.mawr_log_end {
-                    self.mawr_log.push(self.mawr);
-                }
-            }
-            0x01 => {
-                self.marr = combined & 0x7FFF;
-                self.registers[0x01] = self.marr;
-                self.prefetch_read();
-                self.read_phase = VdcReadPhase::Low;
-            }
-            0x02 => self.write_vram(combined),
-            0x04 | 0x05 => {
-                // Mirror control into both slots so legacy/tests remain stable.
-                self.registers[0x04] = combined;
-                self.registers[0x05] = combined;
-                self.control_write_count = self.control_write_count.saturating_add(1);
-                self.last_control_value = combined;
-                if combined != 0 {
-                    self.render_control_latch = combined;
-                }
-                #[cfg(feature = "trace_hw_writes")]
-                eprintln!("  VDC control <= {:04X}", combined);
-            }
-            0x07 => {
-                let masked = combined & 0x03FF;
-                self.registers[0x07] = masked;
-                self.scroll_x_pending = masked;
-                self.scroll_x_dirty = true;
-            }
-            0x08 => {
-                let masked = combined & 0x01FF;
-                self.registers[0x08] = masked;
-                self.scroll_y_pending = masked;
-                self.scroll_y_dirty = true;
-                #[cfg(feature = "trace_hw_writes")]
-                eprintln!("  VDC BYR <= {:04X} (raw {:04X}) @ scanline {}", masked, combined, self.scanline);
-            }
-            0x0A => {
-                // HSR (Horizontal Sync Register) – timing only, not zoom.
-                self.registers[0x0A] = combined;
-            }
-            0x0B => {
-                // HDR (Horizontal Display Register) – timing only, not zoom.
-                self.registers[0x0B] = combined;
-            }
-            0x0C => {
-                // VPR (Vertical Position Register): VSW (low) + VDS (high).
-                // Timing-only; stored for vertical window calculation.
-                self.registers[0x0C] = combined;
-            }
-            0x0F => self.write_dma_control(combined),
-            0x10 => self.write_dma_source(combined),
-            0x11 => self.write_dma_destination(combined),
-            0x12 => self.write_dma_length(combined),
-            0x13 => self.write_satb_source(index, combined),
-            // $14+ are beyond the HuC6270 register set — writes are stored
-            // in the register array but have no side effects.
-            _ => {}
-        }
-    }
-
-    #[allow(dead_code)] // Internal utility; not triggered by standard HuC6270 registers.
-    fn schedule_cram_dma(&mut self) {
-        self.cram_pending = true;
-        self.cram_dma_count += 1;
-        self.last_cram_source = self.marr & 0x7FFF;
-        self.last_cram_length = self.registers[0x12];
-        #[cfg(feature = "trace_hw_writes")]
-        eprintln!(
-            "  VDC CRAM DMA scheduled (pending len {:04X}) source {:04X} (MAWR {:04X})",
-            self.registers[0x12],
-            self.last_cram_source,
-            self.marr & 0x7FFF
-        );
-    }
-
-    fn write_dma_control(&mut self, value: u16) {
-        let masked = value & 0x001F;
-        self.dma_control = masked;
-        self.registers[0x0F] = masked;
-        // Per MAME huc6270.cpp: writing DCR only stores the value.
-        // Status flags (DS/DV) are NOT cleared here — they are only
-        // cleared when the status register is read.
-        if masked & DMA_CTRL_SATB_AUTO == 0 {
-            self.satb_pending = false;
-        }
-    }
-
-    fn write_dma_source(&mut self, value: u16) {
-        self.dma_source = value;
-        self.registers[0x10] = value;
-    }
-
-    fn write_dma_destination(&mut self, value: u16) {
-        let masked = value & 0x7FFF;
-        self.dma_destination = masked;
-        self.registers[0x11] = masked;
-    }
-
-    fn write_dma_length(&mut self, value: u16) {
-        self.registers[0x12] = value;
-        self.vram_dma_request = true;
-    }
-
-    fn write_satb_source(&mut self, index: usize, value: u16) {
-        let masked = value & 0x7FFF;
-        self.satb_source = masked;
-        if let Some(slot) = self.registers.get_mut(index) {
-            *slot = masked;
-        }
-        // Match real hardware (MAME huc6270.cpp): writing DVSSR sets
-        // a one-shot flag (satb_written) that schedules a transfer for
-        // the next VBlank.  This flag is independent of the auto-
-        // transfer bit in DCR, so writing DCR cannot cancel it.
-        self.satb_written = true;
-    }
-
-    fn perform_satb_dma(&mut self) {
-        let base = (self.satb_source & 0x7FFF) as usize;
-        for i in 0..self.satb.len() {
-            let idx = (base + i) & 0x7FFF;
-            self.satb[i] = *self.vram.get(idx).unwrap_or(&0);
-        }
-        let busy_cycles = (self.satb.len() as u32).saturating_mul(VDC_DMA_WORD_CYCLES);
-        self.set_busy(busy_cycles);
-        self.raise_status(VDC_STATUS_DS);
-        // Clear the one-shot flag; auto stays based on DCR bit 4.
-        self.satb_written = false;
-        self.satb_pending = (self.dma_control & DMA_CTRL_SATB_AUTO) != 0;
-        #[cfg(feature = "trace_hw_writes")]
-        eprintln!(
-            "  VDC SATB DMA complete (source {:04X}) -> status {:02X}",
-            self.satb_source, self.status
-        );
-    }
-
-    fn handle_vblank_start(&mut self) -> bool {
-        // Match MAME huc6270.cpp handle_vblank(): DMA runs when DVSSR was
-        // written (one-shot) OR when auto-transfer (DCR bit 4) is enabled.
-        let auto = (self.dma_control & DMA_CTRL_SATB_AUTO) != 0;
-        if !self.satb_written && !auto {
-            return false;
-        }
-        self.perform_satb_dma();
-        true
-    }
-
-    fn advance_vram_addr(addr: u16, decrement: bool) -> u16 {
-        let next = if decrement {
-            addr.wrapping_sub(1)
-        } else {
-            addr.wrapping_add(1)
-        };
-        next & 0x7FFF
-    }
-
-    fn write_vram(&mut self, value: u16) {
-        let addr = self.mawr & 0x7FFF;
-
-        // Debug: range tracking and write log (always record, even if latched)
-        if addr >= self.vram_write_range_start && addr < self.vram_write_range_end {
-            self.vram_write_range_count = self.vram_write_range_count.saturating_add(1);
-        }
-        if self.vram_write_log.len() < self.vram_write_log_limit {
-            self.vram_write_log.push((addr, value));
-        }
-        #[cfg(feature = "trace_hw_writes")]
-        eprintln!("    VRAM[{:04X}] = {:04X}", addr, value);
-
-        let idx = addr as usize;
-        if let Some(slot) = self.vram.get_mut(idx) {
-            *slot = value;
-        }
-        // Mark BIOS font as dirty if the write hits the font tile area
-        if !self.bios_font_dirty && !self.bios_font_tiles.is_empty() {
-            if addr >= 0x1200 && addr < 0x1800 {
-                self.bios_font_dirty = true;
-            }
-        }
-        self.set_busy(VDC_BUSY_ACCESS_CYCLES);
-
-        // MAWR always advances immediately regardless of whether the
-        // write was committed or latched (real HW behaviour).
-        self.mawr = (self.mawr.wrapping_add(self.increment_step())) & 0x7FFF;
-        self.registers[0x00] = self.mawr;
-        self.registers[0x02] = value;
-    }
-
-    fn write_vram_dma_word(&mut self, addr: u16, value: u16) {
-        let idx = (addr as usize) & 0x7FFF;
-        if let Some(slot) = self.vram.get_mut(idx) {
-            *slot = value;
-        }
-        #[cfg(feature = "trace_hw_writes")]
-        eprintln!("    VRAM DMA[{:04X}] = {:04X}", addr & 0x7FFF, value);
-    }
-
-    fn read_data_low(&mut self) -> u8 {
-        let reg = self.selected_register() as usize;
-        if reg != 0x02 {
-            self.read_phase = VdcReadPhase::High;
-            return (self.registers.get(reg).copied().unwrap_or(0) & 0x00FF) as u8;
-        }
-        if self.read_phase == VdcReadPhase::Low {
-            self.prefetch_read();
-        }
-        self.read_phase = VdcReadPhase::High;
-        (self.read_buffer & 0x00FF) as u8
-    }
-
-    fn read_data_high(&mut self) -> u8 {
-        let reg = self.selected_register() as usize;
-        if reg != 0x02 {
-            self.read_phase = VdcReadPhase::Low;
-            return (self.registers.get(reg).copied().unwrap_or(0) >> 8) as u8;
-        }
-        if self.read_phase == VdcReadPhase::Low {
-            self.prefetch_read();
-        }
-        let value = (self.read_buffer >> 8) as u8;
-        self.advance_read_address();
-        self.read_phase = VdcReadPhase::Low;
-        value
-    }
-
-    fn prefetch_read(&mut self) {
-        let idx = (self.marr as usize) & 0x7FFF;
-        self.read_buffer = *self.vram.get(idx).unwrap_or(&0);
-        self.set_busy(VDC_BUSY_ACCESS_CYCLES);
-        self.registers[0x02] = self.read_buffer;
-    }
-
-    fn advance_read_address(&mut self) {
-        self.marr = (self.marr.wrapping_add(self.increment_step())) & 0x7FFF;
-        self.registers[0x01] = self.marr;
-    }
-
-    fn increment_step(&self) -> u16 {
-        match (self.control() >> 11) & 0x03 {
-            0 => 1,
-            1 => 32,
-            2 => 64,
-            _ => 128,
-        }
-    }
-
-    fn map_dimensions(&self) -> (usize, usize) {
-        let mwr = self.registers[0x09];
-        let width_code = ((mwr >> 4) & 0x03) as usize;
-        let width_tiles = match width_code {
-            0 => 32,
-            1 => 64,
-            2 => 128,
-            _ => 128,
-        };
-        let height_tiles = if (mwr >> 6) & 0x01 == 0 { 32 } else { 64 };
-        (width_tiles, height_tiles)
-    }
-
-    fn map_base_address(&self) -> usize {
-        0
-    }
-
-    fn map_entry_address(&self, tile_row: usize, tile_col: usize) -> usize {
-        let (map_width, map_height) = self.map_dimensions();
-        let width = map_width.max(1);
-        let height = map_height.max(1);
-        let row = tile_row % height;
-        let col = tile_col % width;
-        // HuC6270 BAT uses flat row-major addressing (matching MAME/Mednafen):
-        //   address = bat_y * map_width + bat_x
-        // The MWR register determines the map dimensions.
-        (self.map_base_address() + row * width + col) & 0x7FFF
-    }
-
-    #[cfg(test)]
-    fn map_entry_address_for_test(&self, tile_row: usize, tile_col: usize) -> usize {
-        self.map_entry_address(tile_row, tile_col)
-    }
-
-    #[cfg(test)]
-    fn set_zoom_for_test(&mut self, zoom_x: u16, zoom_y: u16) {
-        self.zoom_x = zoom_x & 0x001F;
-        self.zoom_y = zoom_y & 0x001F;
-        self.scroll_line_valid.fill(false);
-    }
-
-    fn apply_pending_scroll(&mut self) {
-        if self.scroll_x_dirty {
-            self.scroll_x = self.scroll_x_pending & 0x03FF;
-            self.scroll_x_dirty = false;
-        }
-        if self.scroll_y_dirty {
-            self.scroll_y = self.scroll_y_pending & 0x01FF;
-            self.scroll_y_dirty = false;
-            // Writing BYR resets the line offset counter.
-            self.bg_y_offset = 0;
-            self.bg_y_offset_loaded = true;
-        }
-    }
-
-    fn apply_pending_zoom(&mut self) {
-        if self.zoom_x_dirty {
-            self.zoom_x = self.zoom_x_pending & 0x001F;
-            self.zoom_x_dirty = false;
-        }
-        if self.zoom_y_dirty {
-            self.zoom_y = self.zoom_y_pending & 0x001F;
-            self.zoom_y_dirty = false;
-        }
-    }
-
-    fn latch_line_state(&mut self, line: usize) {
-        self.apply_pending_scroll();
-        self.apply_pending_zoom();
-
-        // HuC6270 BG Y offset tracking:
-        //  - At the first active scanline of each frame, the offset resets to 0.
-        //  - Each subsequent active scanline, the offset auto-increments.
-        //  - Writing BYR mid-frame resets the offset to 0 (handled in
-        //    apply_pending_scroll above).
-        // The renderer computes: sample_y = BYR + offset * zoom_step.
-        let window = self.vertical_window();
-        let is_active =
-            !self.in_vblank && line >= window.active_start_line && line < window.vblank_start_line;
-
-        if is_active && !self.bg_y_offset_loaded {
-            self.bg_y_offset = 0;
-            self.bg_y_offset_loaded = true;
-        }
-
-        let idx = line % self.scroll_line_x.len();
-        self.scroll_line_x[idx] = self.scroll_x;
-        self.scroll_line_y[idx] = self.scroll_y;
-        self.scroll_line_y_offset[idx] = self.bg_y_offset;
-        self.zoom_line_x[idx] = self.zoom_x;
-        self.zoom_line_y[idx] = self.zoom_y;
-        self.control_line[idx] = self.control_for_render();
-        self.scroll_line_valid[idx] = true;
-
-        // After latching, increment the offset for the next active scanline.
-        if is_active && self.bg_y_offset_loaded {
-            self.bg_y_offset = self.bg_y_offset.wrapping_add(1);
-        }
-    }
-
-    fn ensure_line_state(&mut self, line: usize) {
-        if line >= self.scroll_line_x.len() {
-            self.apply_pending_scroll();
-            self.apply_pending_zoom();
-            return;
-        }
-        if !self.scroll_line_valid[line] {
-            self.apply_pending_scroll();
-            self.apply_pending_zoom();
-            self.scroll_line_x[line] = self.scroll_x;
-            self.scroll_line_y[line] = self.scroll_y;
-            // For lines not latched by the scanline loop (e.g. direct
-            // render calls in tests), synthesise the Y offset.
-            let window = self.vertical_window();
-            let offset = if line >= window.active_start_line && line < window.vblank_start_line {
-                (line - window.active_start_line) as u16
-            } else {
-                0
-            };
-            self.scroll_line_y_offset[line] = offset;
-            self.zoom_line_x[line] = self.zoom_x;
-            self.zoom_line_y[line] = self.zoom_y;
-            self.control_line[line] = self.control_for_render();
-            self.scroll_line_valid[line] = true;
-        }
-    }
-
-    /// Returns (x_scroll, y_scroll, y_offset) for the given line.
-    /// y_offset is the number of active lines since BYR was last loaded/written.
-    fn scroll_values_for_line(&mut self, line: usize) -> (usize, usize, usize) {
-        self.ensure_line_state(line);
-        if line < self.scroll_line_x.len() {
-            (
-                self.scroll_line_x[line] as usize,
-                self.scroll_line_y[line] as usize,
-                self.scroll_line_y_offset[line] as usize,
-            )
-        } else {
-            (self.scroll_x as usize, self.scroll_y as usize, 0)
-        }
-    }
-
-    fn zoom_values_for_line(&mut self, line: usize) -> (u16, u16) {
-        self.ensure_line_state(line);
-        if line < self.zoom_line_x.len() {
-            (self.zoom_line_x[line], self.zoom_line_y[line])
-        } else {
-            (self.zoom_x, self.zoom_y)
-        }
-    }
-
-    fn control_values_for_line(&mut self, line: usize) -> u16 {
-        self.ensure_line_state(line);
-        if line < self.control_line.len() {
-            self.control_line[line]
-        } else {
-            self.control_for_render()
-        }
-    }
-
-    fn line_state_index_for_frame_row(&self, row: usize) -> usize {
-        let window = self.vertical_window();
-        self.frame_line_for_output_row(&window, row)
-    }
-
-    fn advance_scanline(&mut self) -> bool {
-        self.scanline = self.scanline.wrapping_add(1);
-        let mut wrapped = false;
-        if self.scanline >= LINES_PER_FRAME {
-            self.scanline = 0;
-            self.in_vblank = false;
-            self.scroll_line_valid.fill(false);
-            self.refresh_activity_flags();
-            self.bg_y_offset_loaded = false;
-            wrapped = true;
-        }
-        // Don't latch here — the tick() loop latches after the RCR check
-        // so that the CPU ISR can modify scroll registers before the
-        // RCR scanline's state is committed.  The scroll_line_valid array
-        // serves as the implicit "needs latch" flag: the new scanline's
-        // entry is still false (cleared on frame wrap), so the tick loop
-        // knows to latch it.
-        wrapped
-    }
-
-    #[cfg(test)]
-    fn advance_scanline_for_test(&mut self) {
-        self.advance_scanline();
-        // Tests expect line state to be latched immediately after advancing.
-        self.latch_line_state(self.scanline as usize);
-    }
-
-    fn zoom_step_value(raw: u16) -> usize {
-        let value = (raw & 0x001F) as usize;
-        value.max(1).min(32)
-    }
-
-    #[cfg(test)]
-    fn scroll_for_scanline(&mut self) -> (usize, usize) {
-        self.apply_pending_scroll();
-        (self.scroll_x as usize, self.scroll_y as usize)
-    }
-
-    fn scroll_line(&self, line: usize) -> (u16, u16) {
-        if line < self.scroll_line_x.len() {
-            (self.scroll_line_x[line], self.scroll_line_y[line])
-        } else {
-            (self.scroll_x, self.scroll_y)
-        }
-    }
-
-    fn zoom_line(&self, line: usize) -> (u16, u16) {
-        if line < self.zoom_line_x.len() {
-            (self.zoom_line_x[line], self.zoom_line_y[line])
-        } else {
-            (self.zoom_x, self.zoom_y)
-        }
-    }
-
-    fn control_line(&self, line: usize) -> u16 {
-        if line < self.control_line.len() {
-            self.control_line[line]
-        } else {
-            self.control_for_render()
-        }
-    }
-
-    fn scroll_line_valid(&self, line: usize) -> bool {
-        self.scroll_line_valid.get(line).copied().unwrap_or(false)
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug, bincode::Encode, bincode::Decode)]
-enum VdcWritePhase {
-    Low,
-    High,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug, bincode::Encode, bincode::Decode)]
-enum VdcReadPhase {
-    Low,
-    High,
-}
-
-const PSG_REG_COUNT: usize = 32;
-const PSG_CHANNEL_COUNT: usize = 6;
-const PSG_WAVE_SIZE: usize = 32;
-const PSG_REG_CH_SELECT: usize = 0x00;
-const PSG_REG_MAIN_BALANCE: usize = 0x01;
-const PSG_REG_FREQ_LO: usize = 0x02;
-const PSG_REG_FREQ_HI: usize = 0x03;
-const PSG_REG_CH_CONTROL: usize = 0x04;
-const PSG_REG_CH_BALANCE: usize = 0x05;
-const PSG_REG_WAVE_DATA: usize = 0x06;
-const PSG_REG_NOISE_CTRL: usize = 0x07;
-const PSG_REG_LFO_FREQ: usize = 0x08;
-const PSG_REG_LFO_CTRL: usize = 0x09;
-const PSG_REG_TIMER_LO: usize = 0x18;
-const PSG_REG_TIMER_HI: usize = 0x19;
-const PSG_REG_TIMER_CTRL: usize = 0x1A;
-const PSG_CTRL_ENABLE: u8 = 0x01;
-const PSG_CTRL_IRQ_ENABLE: u8 = 0x02;
-const PSG_STATUS_IRQ: u8 = 0x80;
-const PSG_CH_CTRL_VOLUME_MASK: u8 = 0x1F;
-const PSG_CH_CTRL_DDA: u8 = 0x40;
-const PSG_CH_CTRL_KEY_ON: u8 = 0x80;
-const PSG_NOISE_ENABLE: u8 = 0x80;
-const PSG_NOISE_FREQ_MASK: u8 = 0x1F;
-const PSG_PHASE_FRAC_BITS: u32 = 12;
-const PSG_PHASE_FRAC_MASK: u32 = (1 << PSG_PHASE_FRAC_BITS) - 1;
-const PSG_PERIOD_ENTRIES: usize = 0x1000;
-// Output gain: Mednafen uses base * 8/6 ≈ 1.33x per channel.
-// With 6 channels at max (15 * 65536 each), max mix = 5,898,240.
-// Gain 340: (5,898,240 * 340) >> 16 = 30,600 (within i16 range).
-const PSG_OUTPUT_GAIN: i32 = 340;
-
-/// Logarithmic volume table (Mednafen-compatible).
-/// Index = attenuation level (0 = full volume, 31 = silence).
-/// Each step ≈ 1.5 dB: multiplier = 1.0 / pow(2, 0.25 * level).
-/// Values are fixed-point with 16 fractional bits.
-fn psg_db_table() -> &'static [i32; 32] {
-    static TABLE: std::sync::OnceLock<[i32; 32]> = std::sync::OnceLock::new();
-    TABLE.get_or_init(|| {
-        let mut table = [0i32; 32];
-        for vl in 0..32 {
-            if vl == 31 {
-                table[vl] = 0; // muted
-            } else if vl == 0 {
-                table[vl] = 65536; // 1.0 in fixed-point
-            } else {
-                let multiplier = 1.0 / f64::powf(2.0, 0.25 * vl as f64);
-                table[vl] = (multiplier * 65536.0) as i32;
-            }
-        }
-        table
-    })
-}
-
-/// Maps 4-bit balance register values (0-15) to 5-bit volume range (0-31).
-/// 0 = muted (maps to 0), 15 = full volume (maps to 31).
-fn psg_balance_scale_tab() -> &'static [u8; 16] {
-    static TABLE: std::sync::OnceLock<[u8; 16]> = std::sync::OnceLock::new();
-    TABLE.get_or_init(|| {
-        let mut table = [0u8; 16];
-        for n in 0..16u8 {
-            if n == 0 {
-                table[n as usize] = 0;
-            } else {
-                // Scale 1-15 to 3-31 (matching Mednafen: n*2 + 1 for non-zero)
-                table[n as usize] = (n * 2 + 1).min(31);
-            }
-        }
-        table
-    })
-}
-
-#[derive(Clone, Copy, bincode::Encode, bincode::Decode)]
-struct PsgChannel {
-    frequency: u16,
-    phase_step: u32,
-    control: u8,
-    balance: u8,
-    noise_control: u8,
-    phase: u32,
-    wave_pos: u8,
-    wave_write_pos: u8,
-    dda_sample: u8,
-    noise_lfsr: u32, // 18-bit LFSR (HuC6280 reference)
-    noise_phase: u32,
-}
-
-impl Default for PsgChannel {
-    fn default() -> Self {
-        Self {
-            frequency: 0,
-            phase_step: 1,
-            control: 0,
-            balance: 0xFF,
-            noise_control: 0,
-            phase: 0,
-            wave_pos: 0,
-            wave_write_pos: 0,
-            dda_sample: 0x10,
-            noise_lfsr: 1, // 18-bit LFSR initial value (Mednafen reference)
-            noise_phase: 0,
-        }
-    }
-}
-
-#[derive(Clone, bincode::Encode, bincode::Decode)]
-struct Psg {
-    regs: [u8; PSG_REG_COUNT],
-    select: u8,
-    current_channel: usize,
-    main_balance: u8,
-    lfo_frequency: u8,
-    lfo_control: u8,
-    accumulator: u32,
-    irq_pending: bool,
-    channels: [PsgChannel; PSG_CHANNEL_COUNT],
-    waveform_ram: [u8; PSG_CHANNEL_COUNT * PSG_WAVE_SIZE],
-    /// First-order IIR low-pass filter state for anti-aliasing.
-    lpf_state: f64,
-}
-
-impl Psg {
-    fn new() -> Self {
-        Self {
-            regs: [0; PSG_REG_COUNT],
-            select: 0,
-            current_channel: 0,
-            main_balance: 0xFF,
-            lfo_frequency: 0,
-            lfo_control: 0,
-            accumulator: 0,
-            irq_pending: false,
-            channels: [PsgChannel::default(); PSG_CHANNEL_COUNT],
-            waveform_ram: [0; PSG_CHANNEL_COUNT * PSG_WAVE_SIZE],
-            lpf_state: 0.0,
-        }
-    }
-
-    fn reset(&mut self) {
-        *self = Self::new();
-    }
-
-    fn write_address(&mut self, value: u8) {
-        self.select = value;
-    }
-
-    fn write_data(&mut self, value: u8) {
-        let index = self.select as usize;
-        if index < PSG_REG_COUNT {
-            self.regs[index] = value;
-            self.write_register(index, value);
-        }
-        if index >= PSG_REG_COUNT {
-            self.write_wave_ram(index - PSG_REG_COUNT, value);
-        }
-        self.select = self.select.wrapping_add(1);
-    }
-
-    fn read_address(&self) -> u8 {
-        self.select
-    }
-
-    fn read_data(&mut self) -> u8 {
-        let index = self.select as usize;
-        let value = if index < PSG_REG_COUNT {
-            self.regs[index]
-        } else {
-            let wave_index = index - PSG_REG_COUNT;
-            self.waveform_ram[wave_index % self.waveform_ram.len()]
-        };
-        self.select = self.select.wrapping_add(1);
-        value
-    }
-
-    fn write_direct(&mut self, index: usize, value: u8) {
-        if index < PSG_REG_COUNT {
-            self.regs[index] = value;
-            self.write_register(index, value);
-        } else {
-            self.write_wave_ram(index - PSG_REG_COUNT, value);
-        }
-    }
-
-    fn read_direct(&mut self, index: usize) -> u8 {
-        if index < PSG_REG_COUNT {
-            self.regs[index]
-        } else {
-            let wave_index = index - PSG_REG_COUNT;
-            self.waveform_ram[wave_index % self.waveform_ram.len()]
-        }
-    }
-
-    fn read_status(&mut self) -> u8 {
-        let mut status = 0;
-        if self.irq_pending {
-            status |= PSG_STATUS_IRQ;
-        }
-        status
-    }
-
-    fn write_register(&mut self, index: usize, value: u8) {
-        match index {
-            PSG_REG_CH_SELECT => {
-                self.current_channel = (value as usize) & 0x07;
-                if self.current_channel >= PSG_CHANNEL_COUNT {
-                    self.current_channel = PSG_CHANNEL_COUNT - 1;
-                }
-            }
-            PSG_REG_MAIN_BALANCE => {
-                self.main_balance = value;
-            }
-            PSG_REG_FREQ_LO => {
-                let ch = self.current_channel;
-                let channel = &mut self.channels[ch];
-                channel.frequency = (channel.frequency & 0x0F00) | value as u16;
-                channel.phase_step = Self::phase_step_for_period(channel.frequency);
-            }
-            PSG_REG_FREQ_HI => {
-                let ch = self.current_channel;
-                let channel = &mut self.channels[ch];
-                channel.frequency = (channel.frequency & 0x00FF) | (((value & 0x0F) as u16) << 8);
-                channel.phase_step = Self::phase_step_for_period(channel.frequency);
-            }
-            PSG_REG_CH_CONTROL => {
-                let ch = self.current_channel;
-                let channel = &mut self.channels[ch];
-                let previous = channel.control;
-                channel.control = value;
-                if previous & PSG_CH_CTRL_DDA != 0 && value & PSG_CH_CTRL_DDA == 0 {
-                    // Hardware resets the waveform index when DDA is cleared.
-                    channel.wave_write_pos = 0;
-                    channel.wave_pos = 0;
-                }
-                if previous & PSG_CH_CTRL_KEY_ON == 0 && value & PSG_CH_CTRL_KEY_ON != 0 {
-                    channel.phase = 0;
-                    channel.wave_pos = channel.wave_write_pos;
-                    channel.noise_phase = 0;
-                    channel.noise_lfsr = 1;
-                }
-            }
-            PSG_REG_CH_BALANCE => {
-                self.channels[self.current_channel].balance = value;
-            }
-            PSG_REG_WAVE_DATA => {
-                let ch = self.current_channel;
-                let channel = &mut self.channels[ch];
-                let sample = value & 0x1F;
-                if channel.control & PSG_CH_CTRL_DDA != 0 {
-                    channel.dda_sample = sample;
-                }
-                if channel.control & PSG_CH_CTRL_KEY_ON == 0 {
-                    // Games commonly upload wave tables with KEY OFF and DDA toggled.
-                    // Accept writes whenever KEY is off so both patterns work.
-                    let write_pos = channel.wave_write_pos as usize & (PSG_WAVE_SIZE - 1);
-                    let index = ch * PSG_WAVE_SIZE + write_pos;
-                    self.waveform_ram[index] = sample;
-                    channel.wave_write_pos = channel.wave_write_pos.wrapping_add(1) & 0x1F;
-                }
-            }
-            PSG_REG_NOISE_CTRL => {
-                if self.current_channel >= 4 {
-                    self.channels[self.current_channel].noise_control = value;
-                }
-            }
-            PSG_REG_LFO_FREQ => {
-                self.lfo_frequency = value;
-            }
-            PSG_REG_LFO_CTRL => {
-                self.lfo_control = value;
-            }
-            PSG_REG_TIMER_LO | PSG_REG_TIMER_HI => {
-                self.accumulator = 0;
-            }
-            PSG_REG_TIMER_CTRL => {
-                if value & PSG_CTRL_ENABLE == 0 {
-                    self.irq_pending = false;
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn timer_period(&self) -> u16 {
-        let lo = self.regs[PSG_REG_TIMER_LO] as u16;
-        let hi = self.regs[PSG_REG_TIMER_HI] as u16;
-        (hi << 8) | lo
-    }
-
-    fn enabled(&self) -> bool {
-        let ctrl = self.regs[PSG_REG_TIMER_CTRL];
-        self.timer_period() != 0 && (ctrl & PSG_CTRL_ENABLE != 0)
-    }
-
-    fn tick(&mut self, cycles: u32) -> bool {
-        if !self.enabled() {
-            return false;
-        }
-        if self.irq_pending {
-            return false;
-        }
-
-        self.accumulator = self.accumulator.saturating_add(cycles);
-        let period = self.timer_period() as u32;
-        if period == 0 {
-            return false;
-        }
-        if self.accumulator >= period {
-            self.accumulator %= period.max(1);
-            if self.regs[PSG_REG_TIMER_CTRL] & PSG_CTRL_IRQ_ENABLE != 0 {
-                self.irq_pending = true;
-                return true;
-            }
-        }
-        false
-    }
-
-    fn acknowledge(&mut self) {
-        self.irq_pending = false;
-    }
-
-    #[inline]
-    fn phase_step_for_period(period: u16) -> u32 {
-        Self::phase_step_table()[(period & 0x0FFF) as usize]
-    }
-
-    #[inline]
-    fn phase_step_table() -> &'static [u32; PSG_PERIOD_ENTRIES] {
-        static TABLE: std::sync::OnceLock<[u32; PSG_PERIOD_ENTRIES]> = std::sync::OnceLock::new();
-        TABLE.get_or_init(|| {
-            let mut table = [1u32; PSG_PERIOD_ENTRIES];
-            for (period, slot) in table.iter_mut().enumerate() {
-                let divider = if period == 0 {
-                    0x1000_u64
-                } else {
-                    period as u64
-                };
-                *slot = ((((PSG_CLOCK_HZ as u64) << PSG_PHASE_FRAC_BITS)
-                    / (divider * AUDIO_SAMPLE_RATE as u64))
-                    .max(1)) as u32;
-            }
-            table
-        })
-    }
-
-    fn generate_sample(&mut self) -> i16 {
-        self.advance_waveforms();
-        let mut mix: i32 = 0;
-        for channel_index in 0..PSG_CHANNEL_COUNT {
-            let state = self.channels[channel_index];
-            mix += self.sample_channel(channel_index, state);
-        }
-        // sample_channel() returns values with 16 fractional bits.
-        // Per-channel max = 15 * 65536 = 983,040; 6-channel max = 5,898,240.
-        // Apply gain and shift: (mix * gain) >> 16.
-        // With PSG_OUTPUT_GAIN=256: max = (5,898,240 * 256) >> 16 = 23,040.
-        let scaled = ((mix as i64 * PSG_OUTPUT_GAIN as i64) >> 16) as i32;
-        let clamped = scaled.clamp(i16::MIN as i32, i16::MAX as i32) as f64;
-        // First-order IIR low-pass filter (~14 kHz cutoff at 44.1 kHz).
-        // alpha ≈ 2*pi*fc / (2*pi*fc + fs) ≈ 0.67 for fc=14000, fs=44100
-        const LPF_ALPHA: f64 = 0.67;
-        self.lpf_state = self.lpf_state + LPF_ALPHA * (clamped - self.lpf_state);
-        self.lpf_state as i16
-    }
-
-    fn advance_waveforms(&mut self) {
-        let lfo_mod = self.lfo_modulation();
-        let lfo_enabled = self.lfo_enabled();
-        for idx in 0..PSG_CHANNEL_COUNT {
-            let ch = &mut self.channels[idx];
-            if ch.control & PSG_CH_CTRL_KEY_ON == 0 {
-                continue;
-            }
-            if ch.control & PSG_CH_CTRL_DDA != 0 {
-                continue;
-            }
-            if idx >= 4 && ch.noise_control & PSG_NOISE_ENABLE != 0 {
-                // HuC6280 noise generator (Mednafen reference):
-                // - 18-bit LFSR with taps at bits 0, 1, 11, 12, 17
-                // - Noise period: NF = noisectrl & 0x1F
-                //   raw = 31 - NF; if raw==0 then period=64, else period = raw * 128
-                // - LFSR steps once per `period` PSG clock cycles
-                // Use 16-bit fixed-point accumulator for precision.
-                let nf = (ch.noise_control & PSG_NOISE_FREQ_MASK) as u32;
-                let raw = 31u32.saturating_sub(nf);
-                let period = if raw == 0 { 64u64 } else { raw as u64 * 128 };
-                let noise_step =
-                    ((PSG_CLOCK_HZ as u64) << 16) / (period * AUDIO_SAMPLE_RATE as u64);
-                ch.noise_phase = ch.noise_phase.wrapping_add(noise_step.max(1) as u32);
-                let steps = (ch.noise_phase >> 16) as usize;
-                ch.noise_phase &= 0xFFFF;
-                for _ in 0..steps {
-                    let lfsr = ch.noise_lfsr;
-                    let feedback =
-                        ((lfsr >> 0) ^ (lfsr >> 1) ^ (lfsr >> 11) ^ (lfsr >> 12) ^ (lfsr >> 17))
-                            & 0x01;
-                    ch.noise_lfsr = (lfsr >> 1) | (feedback << 17);
-                    if ch.noise_lfsr == 0 {
-                        ch.noise_lfsr = 1;
-                    }
-                }
-                continue;
-            }
-
-            let step_fp = if idx == 0 && lfo_enabled {
-                let effective_period = (ch.frequency as i32 + lfo_mod).clamp(0, 0x0FFF) as u16;
-                Self::phase_step_for_period(effective_period)
-            } else {
-                ch.phase_step.max(1)
-            };
-            let phase = ch.phase.wrapping_add(step_fp);
-            let step = (phase >> PSG_PHASE_FRAC_BITS) as u8;
-            ch.phase = phase & PSG_PHASE_FRAC_MASK;
-            if step != 0 {
-                ch.wave_pos = ch.wave_pos.wrapping_add(step) & (PSG_WAVE_SIZE as u8 - 1);
-            }
-        }
-    }
-
-    fn sample_channel(&self, channel: usize, state: PsgChannel) -> i32 {
-        if state.control & PSG_CH_CTRL_KEY_ON == 0 {
-            return 0;
-        }
-        let raw = if state.control & PSG_CH_CTRL_DDA != 0 {
-            state.dda_sample as i32 - 0x10
-        } else if channel >= 4 && state.noise_control & PSG_NOISE_ENABLE != 0 {
-            if state.noise_lfsr & 0x01 == 0 {
-                0x0F
-            } else {
-                -0x10
-            }
-        } else {
-            let base = channel * PSG_WAVE_SIZE;
-            let offset = (state.wave_pos as usize) & (PSG_WAVE_SIZE - 1);
-            let wave_index = base + offset;
-            self.waveform_ram[wave_index] as i32 - 0x10
-        };
-        if raw == 0 {
-            return 0;
-        }
-
-        // Logarithmic volume mixing (Mednafen-compatible).
-        // Combine channel volume, channel balance, and main balance as
-        // attenuation indices (additive in dB domain).
-        let db_table = psg_db_table();
-        let scale_tab = psg_balance_scale_tab();
-
-        // Channel volume: 5-bit, 31=max(0 attenuation), 0=min(31 attenuation)
-        let al = 0x1F_u8.wrapping_sub(state.control & PSG_CH_CTRL_VOLUME_MASK);
-
-        // Channel balance: 4-bit per side, scaled to 5-bit range
-        let bal_l = 0x1F - scale_tab[((state.balance >> 4) & 0x0F) as usize];
-        let bal_r = 0x1F - scale_tab[(state.balance & 0x0F) as usize];
-
-        // Main balance: 4-bit per side, scaled to 5-bit range
-        let gbal_l = 0x1F - scale_tab[((self.main_balance >> 4) & 0x0F) as usize];
-        let gbal_r = 0x1F - scale_tab[(self.main_balance & 0x0F) as usize];
-
-        // Sum attenuations (clamped to 31 = silence)
-        let vol_l = ((al as u16 + bal_l as u16 + gbal_l as u16).min(0x1F)) as usize;
-        let vol_r = ((al as u16 + bal_r as u16 + gbal_r as u16).min(0x1F)) as usize;
-
-        // Apply logarithmic volume (fixed-point 16.16).
-        // Return with 16 fractional bits intact; generate_sample() shifts after
-        // accumulating all channels and applying the output gain.
-        let left = raw as i64 * db_table[vol_l] as i64;
-        let right = raw as i64 * db_table[vol_r] as i64;
-        ((left + right) / 2) as i32
-    }
-
-    fn lfo_enabled(&self) -> bool {
-        self.lfo_control & 0x80 != 0
-    }
-
-    fn lfo_modulation(&self) -> i32 {
-        if !self.lfo_enabled() {
-            return 0;
-        }
-        let depth_shift = (self.lfo_control & 0x03) as i32;
-        let speed_bias = (self.lfo_frequency & 0x0F) as i32;
-        let ch1 = self.channels[1];
-        let base = PSG_WAVE_SIZE;
-        let offset = (ch1.wave_pos as usize) & (PSG_WAVE_SIZE - 1);
-        let raw = self.waveform_ram[base + offset] as i32 - 0x10;
-        (raw << depth_shift) + speed_bias
-    }
-
-    fn write_wave_ram(&mut self, addr: usize, value: u8) {
-        let index = addr % self.waveform_ram.len();
-        self.waveform_ram[index] = value & 0x1F;
-    }
-}
-
-#[derive(Clone, bincode::Encode, bincode::Decode)]
-struct Vce {
-    palette: [u16; 0x200],
-    control: u16,
-    address: u16,
-    data_latch: u16,
-    write_phase: VcePhase,
-    read_phase: VcePhase,
-    data_high_without_low: u64,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, bincode::Encode, bincode::Decode)]
-enum VcePhase {
-    Low,
-    High,
-}
-
-impl Vce {
-    fn new() -> Self {
-        Self {
-            palette: [0; 0x200],
-            control: 0,
-            address: 0,
-            data_latch: 0,
-            write_phase: VcePhase::Low,
-            read_phase: VcePhase::Low,
-            data_high_without_low: 0,
-        }
-    }
-
-    fn reset(&mut self) {
-        self.palette.fill(0);
-        self.control = 0;
-        self.address = 0;
-        self.data_latch = 0;
-        self.write_phase = VcePhase::Low;
-        self.read_phase = VcePhase::Low;
-        self.data_high_without_low = 0;
-    }
-
-    fn index(&self) -> usize {
-        (self.address as usize) & 0x01FF
-    }
-
-    fn write_control_low(&mut self, value: u8) {
-        self.control = (self.control & 0xFF00) | value as u16;
-        self.read_phase = VcePhase::Low;
-        self.write_phase = VcePhase::Low;
-        #[cfg(feature = "trace_hw_writes")]
-        eprintln!("  VCE control low <= {:02X}", value);
-    }
-
-    fn write_control_high(&mut self, value: u8) {
-        self.control = ((value as u16) << 8) | (self.control & 0x00FF);
-        self.read_phase = VcePhase::Low;
-        self.write_phase = VcePhase::Low;
-        #[cfg(feature = "trace_hw_writes")]
-        eprintln!("  VCE control high <= {:02X}", value);
-    }
-
-    fn read_control_low(&self) -> u8 {
-        (self.control & 0x00FF) as u8
-    }
-
-    fn read_control_high(&self) -> u8 {
-        (self.control >> 8) as u8
-    }
-
-    fn write_address_low(&mut self, value: u8) {
-        self.address = (self.address & 0x0100) | value as u16;
-        self.read_phase = VcePhase::Low;
-        self.write_phase = VcePhase::Low;
-        #[cfg(feature = "trace_hw_writes")]
-        eprintln!("  VCE address low <= {:02X}", value);
-    }
-
-    fn write_address_high(&mut self, value: u8) {
-        self.address = (self.address & 0x00FF) | (((value as u16) & 0x01) << 8);
-        self.read_phase = VcePhase::Low;
-        self.write_phase = VcePhase::Low;
-        #[cfg(feature = "trace_hw_writes")]
-        eprintln!("  VCE address high <= {:02X}", value);
-    }
-
-    fn read_address_low(&self) -> u8 {
-        (self.address & 0x00FF) as u8
-    }
-
-    fn read_address_high(&self) -> u8 {
-        ((self.address >> 8) & 0x01) as u8
-    }
-
-    fn write_data_low(&mut self, value: u8) {
-        // Per MAME huc6260.cpp: writing the low port directly modifies the
-        // low byte of the current palette entry, preserving the high byte.
-        // No phase tracking needed — each port write takes effect immediately.
-        let idx = self.index();
-        if let Some(slot) = self.palette.get_mut(idx) {
-            *slot = (*slot & 0xFF00) | value as u16;
-        }
-        // Keep latch in sync for reads
-        self.data_latch = self.palette.get(idx).copied().unwrap_or(0);
-        #[cfg(feature = "trace_hw_writes")]
-        eprintln!("  VCE palette[{idx:03X}] low <= {:02X} => {:04X}", value, self.data_latch);
-    }
-
-    fn write_data_high(&mut self, value: u8) {
-        // Per MAME huc6260.cpp: writing the high port directly modifies the
-        // high byte of the current palette entry, preserving the low byte,
-        // then auto-increments the address.  No phase tracking.
-        let idx = self.index();
-        if let Some(slot) = self.palette.get_mut(idx) {
-            *slot = (*slot & 0x00FF) | ((value as u16) << 8);
-        }
-        // Keep latch in sync for reads
-        self.data_latch = self.palette.get(idx).copied().unwrap_or(0);
-        #[cfg(feature = "trace_hw_writes")]
-        eprintln!("  VCE palette[{idx:03X}] high <= {:02X} => {:04X}", value, self.data_latch);
-        self.increment_index();
-    }
-
-    fn read_data_low(&mut self) -> u8 {
-        if self.read_phase == VcePhase::Low {
-            self.data_latch = self.palette.get(self.index()).copied().unwrap_or(0);
-        }
-        self.read_phase = VcePhase::High;
-        (self.data_latch & 0x00FF) as u8
-    }
-
-    fn read_data_high(&mut self) -> u8 {
-        if self.read_phase == VcePhase::Low {
-            self.data_latch = self.palette.get(self.index()).copied().unwrap_or(0);
-        }
-        let value = (self.data_latch >> 8) as u8;
-        self.increment_index();
-        self.read_phase = VcePhase::Low;
-        value
-    }
-
-    fn increment_index(&mut self) {
-        let next = (self.index() + 1) & 0x01FF;
-        self.address = (next as u16) & 0x01FF;
-    }
-
-    #[inline]
-    fn brightness_override() -> Option<u8> {
-        use std::sync::OnceLock;
-        static OVERRIDE: OnceLock<Option<u8>> = OnceLock::new();
-        *OVERRIDE.get_or_init(|| {
-            std::env::var("PCE_FORCE_BRIGHTNESS")
-                .ok()
-                .and_then(|s| u8::from_str_radix(&s, 16).ok())
-                .map(|v| v & 0x0F)
-        })
-    }
-
-    fn palette_word(&self, index: usize) -> u16 {
-        self.palette.get(index).copied().unwrap_or(0)
-    }
-
-    fn palette_rgb(&self, index: usize) -> u32 {
-        let raw = self.palette.get(index).copied().unwrap_or(0);
-        // HuC6260 palette words are 9-bit RGB (3 bits/channel).
-        let blue = (raw & 0x0007) as u8;
-        let red = ((raw >> 3) & 0x0007) as u8;
-        let green = ((raw >> 6) & 0x0007) as u8;
-
-        let scale = Self::brightness_override()
-            .map(|v| v as u16)
-            .unwrap_or(0x07);
-        let component = |value: u8| -> u8 {
-            if scale == 0 {
-                return 0;
-            }
-            let expanded = (value as u16 * 255) / 0x07;
-            let scaled = (expanded * scale) / 0x07;
-            scaled.min(255) as u8
-        };
-
-        let r = component(red);
-        let g = component(green);
-        let b = component(blue);
-        ((r as u32) << 16) | ((g as u32) << 8) | b as u32
-    }
-
-    fn data_high_without_low(&self) -> u64 {
-        self.data_high_without_low
-    }
-}
+// Vce is defined in src/vce.rs
 
 impl Timer {
     fn new() -> Self {
@@ -5631,6 +3258,7 @@ impl IoPort {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::psg::*;
 
     const VCE_ADDRESS_ADDR: u16 = 0x0402;
     const VCE_ADDRESS_HIGH_ADDR: u16 = 0x0403;
@@ -6303,20 +3931,18 @@ mod tests {
     }
 
     #[test]
-    fn rcr_scanline_uses_vds_start_offset() {
+    fn rcr_scanline_uses_active_start_offset() {
         let mut vdc = Vdc::new();
-        // VPR: VSW=2 VDS=15 → vds_start = vsw+1 = 3
+        // VPR: VSW=2 VDS=15 → active_start = vsw+1+vds+2 = 20
         vdc.registers[0x0C] = 0x0F02;
         vdc.registers[0x0D] = 0x00EF;
         vdc.registers[0x0E] = 0x0003;
 
-        // target 0x40: counter just reset → line = 3 + 0 = 3 (VDS start)
-        assert_eq!(vdc.rcr_scanline_for_target(0x0040), Some(3));
-        // target 0x51: first active line → line = 3 + 17 = 20
-        assert_eq!(vdc.rcr_scanline_for_target(0x0051), Some(20));
-        // target 0x63: line = 3 + 35 = 38
-        assert_eq!(vdc.rcr_scanline_for_target(0x0063), Some(38));
-        // target below 0x40: counter never reaches these after reset
+        // target 0x40: counter = 0x40 at active_start → line = 20
+        assert_eq!(vdc.rcr_scanline_for_target(0x0040), Some(20));
+        // target 0x63: line = 20 + 35 = 55 (Kato-chan HUD split)
+        assert_eq!(vdc.rcr_scanline_for_target(0x0063), Some(55));
+        // target below 0x40: not reachable
         assert_eq!(vdc.rcr_scanline_for_target(0x0002), None);
     }
 
