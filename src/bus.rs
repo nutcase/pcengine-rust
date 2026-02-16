@@ -2139,18 +2139,11 @@ impl Bus {
         if !background_line_enabled.iter().any(|&enabled| enabled)
             && !sprite_line_enabled.iter().any(|&enabled| enabled)
         {
-            let background_colour = self.vce.palette_rgb(0);
-            let overscan_colour = self.vce.palette_rgb(0x100);
-            for y in 0..FRAME_HEIGHT {
-                let row_start = y * FRAME_WIDTH;
-                let row_end = row_start + FRAME_WIDTH;
-                let colour = if active_window_line[y] {
-                    background_colour
-                } else {
-                    overscan_colour
-                };
-                self.framebuffer[row_start..row_end].fill(colour);
-            }
+            // Burst mode: both BG and SPR are disabled for the entire frame.
+            // The VDC does not drive any pixel data; the display is blank
+            // (black).  VCE[0] is NOT used here — the VDC simply outputs no
+            // colour information in burst mode.
+            self.framebuffer[..FRAME_WIDTH * FRAME_HEIGHT].fill(0x000000);
             self.frame_ready = true;
             return;
         }
@@ -2189,7 +2182,6 @@ impl Bus {
         self.vdc.clear_sprite_overflow();
 
         let background_colour = self.vce.palette_rgb(0);
-        let overscan_colour = self.vce.palette_rgb(0x100);
         if Self::env_force_test_palette() {
             // デバッグ: パレットを簡易グラデーションに初期化
             for i in 0..self.vce.palette.len() {
@@ -2230,10 +2222,15 @@ impl Bus {
                 if !background_line_enabled[y] {
                     let row_start = y * FRAME_WIDTH;
                     let row_end = row_start + FRAME_WIDTH;
-                    let fill_colour = if active_window_line[y] {
-                        background_colour
+                    let fill_colour = if !active_window_line[y] {
+                        // Non-active window lines: overscan (black)
+                        0x000000
+                    } else if !sprite_line_enabled[y] {
+                        // Burst mode (both BG+SPR disabled): black
+                        0x000000
                     } else {
-                        overscan_colour
+                        // BG disabled but SPR enabled: VCE[0] background
+                        background_colour
                     };
                     self.framebuffer[row_start..row_end].fill(fill_colour);
                     continue;
@@ -6277,10 +6274,12 @@ mod tests {
         bus.write(VCE_DATA_ADDR, 0x00);
         bus.write(VCE_DATA_HIGH_ADDR, 0x3F);
 
-        // Single opaque tile in the top-left BAT cell.
+        // Single opaque tile in the top-left BAT cell (palette 1, tile 1).
+        // Tile pixels = colour index 1 → VCE[0x11] = 0x003F (non-black).
         write_vram_word(&mut bus, 0x0000, 0x1001);
         for row in 0..8u16 {
-            write_vram_word(&mut bus, 0x0010 + row, 0xFFFF);
+            // Plane 0 lo=0xFF, plane 1 hi=0x00 → index bit 0 set, bit 1 clear = index 1
+            write_vram_word(&mut bus, 0x0010 + row, 0x00FF);
             write_vram_word(&mut bus, 0x0018 + row, 0x0000);
         }
 
@@ -6296,10 +6295,11 @@ mod tests {
         bus.write_st_port(2, 0x00);
 
         bus.render_frame_from_vram();
-        let active_pixel = bus.framebuffer[0];
-        let overscan_pixel = bus.framebuffer[6 * FRAME_WIDTH];
-        assert_ne!(active_pixel, overscan_pixel);
-        assert_eq!(overscan_pixel, bus.vce.palette_rgb(0x100));
+        // VDW=3 → 4 active output rows (0..3), rows 4+ are overscan → black.
+        let active_pixel = bus.framebuffer[0]; // first active line
+        let overscan_pixel = bus.framebuffer[6 * FRAME_WIDTH]; // post-active overscan
+        assert_ne!(active_pixel, 0x000000, "active line should render tile data");
+        assert_eq!(overscan_pixel, 0x000000, "overscan lines should be black");
     }
 
     #[test]
@@ -6684,8 +6684,9 @@ mod tests {
 
         let frame = bus.take_frame().expect("expected frame after VBlank");
         assert_eq!(frame.len(), FRAME_WIDTH * FRAME_HEIGHT);
-        assert!(frame.iter().all(|&pixel| pixel == frame[0]));
-        assert!(frame[0] != 0);
+        // With both BG and SPR disabled the VDC is in burst mode — the screen
+        // should be black (0x000000) regardless of VCE[0].
+        assert!(frame.iter().all(|&pixel| pixel == 0x000000));
     }
 
     #[test]

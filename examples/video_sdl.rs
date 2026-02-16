@@ -271,7 +271,7 @@ fn build_pad_state(pressed: &HashSet<Keycode>) -> u8 {
     if pressed.contains(&Keycode::LShift) || pressed.contains(&Keycode::RShift) {
         clear(6);
     } // Select
-    if pressed.contains(&Keycode::Return) || pressed.contains(&Keycode::Space) {
+    if pressed.contains(&Keycode::Return) {
         clear(7);
     } // Run
     state
