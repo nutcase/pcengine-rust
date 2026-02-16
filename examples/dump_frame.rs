@@ -5,9 +5,16 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut args = env::args().skip(1);
     let rom_path = args
         .next()
-        .ok_or("usage: dump_frame <rom.[bin|pce]> [frames] [output.ppm]")?;
+        .ok_or("usage: dump_frame <rom.[bin|pce]> [frames] [output.ppm] [--load-state <path>]")?;
     let frame_target: usize = args.next().and_then(|v| v.parse().ok()).unwrap_or(1);
     let output_path = args.next().unwrap_or_else(|| "frame.ppm".to_string());
+    // Optional: --load-state <path>
+    let mut state_path: Option<String> = None;
+    while let Some(arg) = args.next() {
+        if arg == "--load-state" {
+            state_path = args.next();
+        }
+    }
 
     let rom = std::fs::read(&rom_path)?;
 
@@ -23,6 +30,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         emulator.load_program(0xC000, &rom);
     }
     emulator.reset();
+
+    if let Some(ref sp) = state_path {
+        emulator
+            .load_state_from_file(sp)
+            .map_err(|e| format!("failed to load state: {e}"))?;
+        eprintln!("loaded state from {sp}");
+    }
 
     let mut frames_collected = 0;
     let mut safety_cycles = (frame_target as u64).saturating_mul(250_000).max(5_000_000);

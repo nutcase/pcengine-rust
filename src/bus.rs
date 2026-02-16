@@ -422,10 +422,10 @@ const VDC_CTRL_ENABLE_SPRITES_LEGACY: u16 = 0x0040;
 const VDC_CTRL_ENABLE_BACKGROUND_LEGACY: u16 = 0x0080;
 const VDC_CTRL_ENABLE_BACKGROUND: u16 = 0x0100;
 const VDC_CTRL_ENABLE_SPRITES: u16 = 0x0200;
-const DCR_ENABLE_VRAM_DMA: u8 = 0x01;
-const DCR_ENABLE_CRAM_DMA: u8 = 0x02;
-const DCR_ENABLE_SATB_DMA: u8 = 0x04;
-const DCR_ENABLE_CRAM_DMA_ALT: u8 = 0x20; // Some docs describe bit5 as CRAM DMA enable.
+// Note: HuC6270 register $0F (DCR) bits 0-1 are VRAM DMA / SATB DMA IRQ enables,
+// bits 2-3 are SID/DID, bit 4 is auto-SATB. CRAM DMA is not a standard HuC6270
+// feature — our emulator provides it as an internal utility triggered via
+// schedule_cram_dma().
 
 #[derive(Clone, Copy, bincode::Encode, bincode::Decode)]
 enum VdcPort {
@@ -479,13 +479,6 @@ pub struct Bus {
 }
 
 impl Bus {
-    #[inline]
-    fn env_force_cram_dma() -> bool {
-        use std::sync::OnceLock;
-        static FLAG: OnceLock<bool> = OnceLock::new();
-        *FLAG.get_or_init(|| std::env::var("PCE_FORCE_CRAM_DMA").is_ok())
-    }
-
     #[inline]
     fn env_force_mpr1_hardware() -> bool {
         use std::sync::OnceLock;
@@ -1336,9 +1329,6 @@ impl Bus {
                     );
                 }
             }
-        }
-        if let Some(mask) = self.vdc.take_dcr_request() {
-            self.handle_vdc_dcr(mask);
         }
         if self.vdc.take_vram_dma_request() {
             self.perform_vram_dma();
@@ -2447,7 +2437,7 @@ impl Bus {
         let mut overflow_detected = false;
         let mwr = self.vdc.registers[0x09];
         let sprite_dot_period = (mwr >> 2) & 0x03;
-        let cg_mode_enabled = sprite_dot_period >= 0x02;
+        let cg_mode_enabled = sprite_dot_period == 0x01;
         let reverse_priority = Self::env_sprite_reverse_priority();
         let no_sprite_line_limit = Self::env_no_sprite_line_limit();
         let pattern_raw_index = Self::env_sprite_pattern_raw_index();
@@ -2477,7 +2467,10 @@ impl Bus {
                 let pattern_word = self.vdc.satb.get(base + 2).copied().unwrap_or(0);
                 let attr_word = self.vdc.satb.get(base + 3).copied().unwrap_or(0);
 
-                let y = (y_word & 0x03FF) as i32 - 64;
+                // MAME uses (raster_count - 1 - sat_y) for sprite line calc,
+                // effectively shifting sprites 1 line down relative to BG.
+                // The +1 here matches that hardware pipeline delay.
+                let y = (y_word & 0x03FF) as i32 - 64 + 1;
                 let x = (x_word & 0x03FF) as i32 - 32;
                 let width_cells = if (attr_word & 0x0100) != 0 {
                     2usize
@@ -2500,16 +2493,10 @@ impl Bus {
                     overflow_detected = true;
                     continue;
                 }
-                let available_slots = if no_sprite_line_limit {
-                    width_cells
-                } else {
-                    (16 - slots_used) as usize
-                };
-                let visible_cells = width_cells.min(available_slots);
-                if !no_sprite_line_limit && visible_cells < width_cells {
-                    overflow_detected = true;
-                }
-                slots_used = slots_used.saturating_add(visible_cells as u8);
+                // MAME: accepted sprites always render full width even when
+                // pushing the slot count past 16 (a 32px sprite at slot 15
+                // uses slots 15+16 and renders both cells fully).
+                slots_used = slots_used.saturating_add(width_cells as u8);
 
                 let mut pattern_base_index = if pattern_raw_index {
                     (pattern_word & 0x03FF) as usize
@@ -2519,11 +2506,15 @@ impl Bus {
                 if width_cells == 2 {
                     pattern_base_index &= !0x0001;
                 }
-                pattern_base_index = match height_code {
-                    1 => pattern_base_index & !0x0002,
-                    2 | 3 => pattern_base_index & !0x0006,
-                    _ => pattern_base_index,
-                };
+                // MAME: each height-code bit independently masks a pattern bit.
+                //   cgy bit 0 → mask pattern bit 1
+                //   cgy bit 1 → mask pattern bit 2
+                if height_code & 1 != 0 {
+                    pattern_base_index &= !0x0002;
+                }
+                if height_code & 2 != 0 {
+                    pattern_base_index &= !0x0004;
+                }
 
                 let v_flip = (attr_word & 0x8000) != 0;
                 let local_y = (scanline_y - y) as usize;
@@ -2537,7 +2528,7 @@ impl Bus {
 
                 line_sprites.push(LineSprite {
                     x,
-                    visible_width: visible_cells * SPRITE_PATTERN_WIDTH,
+                    visible_width: full_width,
                     full_width,
                     src_tile_y,
                     row_in_tile,
@@ -3084,26 +3075,6 @@ impl Bus {
         }
     }
 
-    fn handle_vdc_dcr(&mut self, mask: u8) {
-        if mask & DCR_ENABLE_VRAM_DMA != 0 {
-            self.perform_vram_dma();
-        }
-        if mask & (DCR_ENABLE_CRAM_DMA | DCR_ENABLE_CRAM_DMA_ALT) != 0 {
-            self.vdc.schedule_cram_dma();
-            if self.vdc.in_vblank {
-                self.perform_cram_dma();
-            }
-        }
-        if Self::env_force_cram_dma() {
-            self.perform_cram_dma();
-        }
-        if mask & DCR_ENABLE_SATB_DMA != 0 {
-            self.vdc.perform_satb_dma();
-        }
-        self.vdc.registers[0x0C] &= !(mask as u16
-            & (DCR_ENABLE_VRAM_DMA | DCR_ENABLE_CRAM_DMA | DCR_ENABLE_SATB_DMA) as u16);
-    }
-
     fn perform_cram_dma(&mut self) {
         let raw_length = self.vdc.registers[0x12];
         self.vdc.last_cram_source = self.vdc.marr & 0x7FFF;
@@ -3132,7 +3103,6 @@ impl Bus {
         let busy_cycles = (words as u32).saturating_mul(VDC_DMA_WORD_CYCLES);
         self.vdc.set_busy(busy_cycles);
         self.vdc.raise_status(VDC_STATUS_DV);
-        self.vdc.registers[0x0C] &= !(DCR_ENABLE_CRAM_DMA as u16);
         self.vdc.cram_pending = false;
     }
 
@@ -3265,6 +3235,7 @@ struct Vdc {
     dma_destination: u16,
     satb_source: u16,
     satb_pending: bool,
+    satb_written: bool,
     in_vblank: bool,
     frame_trigger: bool,
     scroll_x: u16,
@@ -3292,7 +3263,6 @@ struct Vdc {
     control_line: [u16; LINES_PER_FRAME as usize],
     scroll_line_valid: [bool; LINES_PER_FRAME as usize],
     vram_dma_request: bool,
-    dcr_request: Option<u8>,
     cram_pending: bool,
     cram_dma_count: u64,
     control_write_count: u64,
@@ -3395,6 +3365,7 @@ impl Vdc {
             dma_destination: 0,
             satb_source: 0,
             satb_pending: false,
+            satb_written: false,
             in_vblank: true,
             frame_trigger: false,
             scroll_x: 0,
@@ -3419,7 +3390,6 @@ impl Vdc {
             control_line: [0; LINES_PER_FRAME as usize],
             scroll_line_valid: [false; LINES_PER_FRAME as usize],
             vram_dma_request: false,
-            dcr_request: None,
             cram_pending: false,
             cram_dma_count: 0,
             control_write_count: 0,
@@ -3512,6 +3482,7 @@ impl Vdc {
         self.dma_destination = 0;
         self.satb_source = 0;
         self.satb_pending = false;
+        self.satb_written = false;
         self.in_vblank = true;
         self.frame_trigger = false;
         self.registers[0x09] = 0x0010;
@@ -3538,7 +3509,6 @@ impl Vdc {
         self.control_line = [0; LINES_PER_FRAME as usize];
         self.scroll_line_valid = [false; LINES_PER_FRAME as usize];
         self.vram_dma_request = false;
-        self.dcr_request = None;
         self.cram_pending = false;
         self.cram_dma_count = 0;
         self.control_write_count = 0;
@@ -3642,7 +3612,7 @@ impl Vdc {
     }
 
     fn satb_pending(&self) -> bool {
-        self.satb_pending
+        self.satb_written || self.satb_pending
     }
 
     fn satb_source(&self) -> u16 {
@@ -3864,7 +3834,21 @@ impl Vdc {
             // Normal path: latch line state for the new scanline.
             self.latch_line_state(self.scanline as usize);
 
-            if self.scanline == self.vblank_start_scanline() {
+            // Trigger frame render at the LAST active scanline (one before
+            // VBlank).  Games like Power League III write sprite pattern data
+            // to VRAM during active display; rendering at VBlank start would
+            // miss those writes.  By deferring the trigger to the end of
+            // active display, the batch renderer captures all mid-frame VRAM
+            // updates while per-line scroll/control state is still intact.
+            let vbl = self.vblank_start_scanline();
+            if !self.in_vblank && !self.frame_trigger && vbl > 0
+                && self.scanline == vbl - 1
+            {
+                self.frame_trigger = true;
+                break;
+            }
+
+            if self.scanline == vbl {
                 self.in_vblank = true;
                 self.raise_status(VDC_STATUS_VBL);
                 self.refresh_activity_flags();
@@ -3872,7 +3856,6 @@ impl Vdc {
                 if self.handle_vblank_start() {
                     irq_recalc = true;
                 }
-                self.frame_trigger = true;
                 break;
             }
         }
@@ -4121,27 +4104,10 @@ impl Vdc {
         }
     }
 
-    fn take_dcr_request(&mut self) -> Option<u8> {
-        self.dcr_request.take()
-    }
-
     fn take_vram_dma_request(&mut self) -> bool {
         let pending = self.vram_dma_request;
         self.vram_dma_request = false;
         pending
-    }
-
-    fn request_dcr(&mut self, value: u16) {
-        // DCR command values are treated as 8-bit. If only the high byte is
-        // populated, use it as a compatibility path for legacy write shapes.
-        let masked = if (value & 0x00FF) == 0 {
-            (value >> 8) & 0x00FF
-        } else {
-            value & 0x00FF
-        };
-        self.dcr_request = Some(masked as u8);
-        self.dcr_write_count = self.dcr_write_count.saturating_add(1);
-        self.last_dcr_value = masked as u8;
     }
 
     fn commit_register_write(&mut self, index: usize, combined: u16) {
@@ -4217,23 +4183,22 @@ impl Vdc {
                 self.registers[0x0B] = combined;
             }
             0x0C => {
-                let lo = (combined & 0x00FF) as u8;
-                let hi = (combined >> 8) as u8;
-                if hi == 0 || lo == 0 {
-                    // Compatibility alias: some existing code paths treat R0C
-                    // as DCR when written as an 8-bit value.
-                    self.request_dcr(combined);
-                }
+                // VPR (Vertical Position Register): VSW (low) + VDS (high).
+                // Timing-only; stored for vertical window calculation.
+                self.registers[0x0C] = combined;
             }
             0x0F => self.write_dma_control(combined),
             0x10 => self.write_dma_source(combined),
             0x11 => self.write_dma_destination(combined),
             0x12 => self.write_dma_length(combined),
-            0x13 | 0x14 => self.write_satb_source(index, combined),
+            0x13 => self.write_satb_source(index, combined),
+            // $14+ are beyond the HuC6270 register set — writes are stored
+            // in the register array but have no side effects.
             _ => {}
         }
     }
 
+    #[allow(dead_code)] // Internal utility; not triggered by standard HuC6270 registers.
     fn schedule_cram_dma(&mut self) {
         self.cram_pending = true;
         self.cram_dma_count += 1;
@@ -4252,10 +4217,9 @@ impl Vdc {
         let masked = value & 0x001F;
         self.dma_control = masked;
         self.registers[0x0F] = masked;
-        // Writing DMA control normally acknowledges both DMA-complete flags.
-        if !Self::env_hold_dsdv() {
-            self.status &= !(VDC_STATUS_DS | VDC_STATUS_DV);
-        }
+        // Per MAME huc6270.cpp: writing DCR only stores the value.
+        // Status flags (DS/DV) are NOT cleared here — they are only
+        // cleared when the status register is read.
         if masked & DMA_CTRL_SATB_AUTO == 0 {
             self.satb_pending = false;
         }
@@ -4283,14 +4247,11 @@ impl Vdc {
         if let Some(slot) = self.registers.get_mut(index) {
             *slot = masked;
         }
-        let auto = (self.dma_control & DMA_CTRL_SATB_AUTO) != 0;
-        self.satb_pending = auto;
-        // The hardware latches the source address and primes a transfer that
-        // completes on the next vertical blanking interval. The BIOS expects
-        // the DS flag to raise promptly after writing to SATB, so perform the
-        // copy immediately while still allowing auto-transfer to re-run each
-        // frame when enabled.
-        self.perform_satb_dma();
+        // Match real hardware (MAME huc6270.cpp): writing DVSSR sets
+        // a one-shot flag (satb_written) that schedules a transfer for
+        // the next VBlank.  This flag is independent of the auto-
+        // transfer bit in DCR, so writing DCR cannot cancel it.
+        self.satb_written = true;
     }
 
     fn perform_satb_dma(&mut self) {
@@ -4302,6 +4263,8 @@ impl Vdc {
         let busy_cycles = (self.satb.len() as u32).saturating_mul(VDC_DMA_WORD_CYCLES);
         self.set_busy(busy_cycles);
         self.raise_status(VDC_STATUS_DS);
+        // Clear the one-shot flag; auto stays based on DCR bit 4.
+        self.satb_written = false;
         self.satb_pending = (self.dma_control & DMA_CTRL_SATB_AUTO) != 0;
         #[cfg(feature = "trace_hw_writes")]
         eprintln!(
@@ -4311,7 +4274,10 @@ impl Vdc {
     }
 
     fn handle_vblank_start(&mut self) -> bool {
-        if !self.satb_pending {
+        // Match MAME huc6270.cpp handle_vblank(): DMA runs when DVSSR was
+        // written (one-shot) OR when auto-transfer (DCR bit 4) is enabled.
+        let auto = (self.dma_control & DMA_CTRL_SATB_AUTO) != 0;
+        if !self.satb_written && !auto {
             return false;
         }
         self.perform_satb_dma();
@@ -5246,30 +5212,32 @@ impl Vce {
     }
 
     fn write_data_low(&mut self, value: u8) {
-        self.data_latch = (self.data_latch & 0xFF00) | value as u16;
-        self.write_phase = VcePhase::High;
+        // Per MAME huc6260.cpp: writing the low port directly modifies the
+        // low byte of the current palette entry, preserving the high byte.
+        // No phase tracking needed — each port write takes effect immediately.
+        let idx = self.index();
+        if let Some(slot) = self.palette.get_mut(idx) {
+            *slot = (*slot & 0xFF00) | value as u16;
+        }
+        // Keep latch in sync for reads
+        self.data_latch = self.palette.get(idx).copied().unwrap_or(0);
         #[cfg(feature = "trace_hw_writes")]
-        eprintln!("  VCE data low <= {:02X}", value);
+        eprintln!("  VCE palette[{idx:03X}] low <= {:02X} => {:04X}", value, self.data_latch);
     }
 
     fn write_data_high(&mut self, value: u8) {
-        if self.write_phase != VcePhase::High {
-            // 想定外の順序（high が先）で来たときは low とみなしてラッチし、
-            // 次のバイトを high として待つ。これで low が常に 0 になる症状を回避する。
-            self.data_high_without_low = self.data_high_without_low.saturating_add(1);
-            self.data_latch = (self.data_latch & 0xFF00) | value as u16;
-            self.write_phase = VcePhase::High;
-            return;
-        }
-        self.data_latch = (self.data_latch & 0x00FF) | ((value as u16) << 8);
+        // Per MAME huc6260.cpp: writing the high port directly modifies the
+        // high byte of the current palette entry, preserving the low byte,
+        // then auto-increments the address.  No phase tracking.
         let idx = self.index();
         if let Some(slot) = self.palette.get_mut(idx) {
-            *slot = self.data_latch;
+            *slot = (*slot & 0x00FF) | ((value as u16) << 8);
         }
+        // Keep latch in sync for reads
+        self.data_latch = self.palette.get(idx).copied().unwrap_or(0);
         #[cfg(feature = "trace_hw_writes")]
-        eprintln!("  VCE palette[{idx:03X}] = {:04X}", self.data_latch);
+        eprintln!("  VCE palette[{idx:03X}] high <= {:02X} => {:04X}", value, self.data_latch);
         self.increment_index();
-        self.write_phase = VcePhase::Low;
     }
 
     fn read_data_low(&mut self) -> u8 {
@@ -5803,7 +5771,8 @@ mod tests {
         assert!(bus.bg_opaque[0]);
 
         let satb_index = 0;
-        let y_word = ((0 + 64) & 0x03FF) as u16;
+        // SAT Y=63 puts sprite at screen row 0 (with the +1 pipeline offset)
+        let y_word = ((0 + 63) & 0x03FF) as u16;
         let x_word = ((0 + 32) & 0x03FF) as u16;
         bus.vdc.satb[satb_index] = y_word;
         bus.vdc.satb[satb_index + 1] = x_word;
@@ -5846,7 +5815,8 @@ mod tests {
 
         let sprite_y = 32;
         let sprite_x = 24;
-        bus.vdc.satb[0] = ((sprite_y + 64) & 0x03FF) as u16;
+        // SAT Y = screen_y + 63 to account for +1 pipeline offset
+        bus.vdc.satb[0] = ((sprite_y + 63) & 0x03FF) as u16;
         bus.vdc.satb[1] = ((sprite_x + 32) & 0x03FF) as u16;
         bus.vdc.satb[2] = 0x0000;
         bus.vdc.satb[3] = 0x0000;
@@ -5885,7 +5855,8 @@ mod tests {
         let sprite_base = 0;
         let sprite_y = 32;
         let sprite_x = 24;
-        bus.vdc.satb[sprite_base] = ((sprite_y + 64) & 0x03FF) as u16;
+        // SAT Y = screen_y + 63 to account for +1 pipeline offset
+        bus.vdc.satb[sprite_base] = ((sprite_y + 63) & 0x03FF) as u16;
         bus.vdc.satb[sprite_base + 1] = ((sprite_x + 32) & 0x03FF) as u16;
         bus.vdc.satb[sprite_base + 2] = (BASE_PATTERN as u16) << 1;
         bus.vdc.satb[sprite_base + 3] = 0x0100 | 0x0080;
@@ -5913,7 +5884,7 @@ mod tests {
         for sprite in 0..17 {
             let base = sprite * 4;
             let x_pos = sprite as i32 * 8;
-            bus.vdc.satb[base] = ((y_pos + 64) & 0x03FF) as u16;
+            bus.vdc.satb[base] = ((y_pos + 63) & 0x03FF) as u16;
             bus.vdc.satb[base + 1] = ((x_pos + 32) & 0x03FF) as u16;
             bus.vdc.satb[base + 2] = (TILE_ID as u16) << 1;
             bus.vdc.satb[base + 3] = 0x0000;
@@ -5962,7 +5933,8 @@ mod tests {
         let x_pos = 40;
         let y_pos = 32;
         let satb_index = 0;
-        bus.vdc.satb[satb_index] = ((y_pos + 64) & 0x03FF) as u16;
+        // SAT Y = screen_y + 63 to account for +1 pipeline offset
+        bus.vdc.satb[satb_index] = ((y_pos + 63) & 0x03FF) as u16;
         bus.vdc.satb[satb_index + 1] = ((x_pos + 32) & 0x03FF) as u16;
         bus.vdc.satb[satb_index + 2] = (BASE_TILE as u16) << 1;
         bus.vdc.satb[satb_index + 3] = 0x1000 | 0x0100 | 0x0002;
@@ -5997,7 +5969,8 @@ mod tests {
         let x_pos = 24;
         let y_pos = 40;
         let satb_index = 0;
-        bus.vdc.satb[satb_index] = ((y_pos + 64) & 0x03FF) as u16;
+        // SAT Y = screen_y + 63 to account for +1 pipeline offset
+        bus.vdc.satb[satb_index] = ((y_pos + 63) & 0x03FF) as u16;
         bus.vdc.satb[satb_index + 1] = ((x_pos + 32) & 0x03FF) as u16;
         bus.vdc.satb[satb_index + 2] = (BASE_TILE as u16) << 1;
         bus.vdc.satb[satb_index + 3] = 0x2000;
@@ -7102,19 +7075,21 @@ mod tests {
         // We should stop at the first VBlank/frame trigger and preserve latched line state.
         let _ = vdc.tick(frame_cycles);
         assert!(vdc.frame_ready(), "expected frame trigger after large tick");
+        // Frame trigger now fires at the last active scanline (one before VBlank),
+        // so that mid-frame VRAM writes are captured by the batch renderer.
         assert_eq!(
-            vdc.scanline, VDC_VISIBLE_LINES,
-            "scanline should stop at first frame trigger"
+            vdc.scanline,
+            VDC_VISIBLE_LINES - 1,
+            "scanline should stop one line before VBlank"
         );
         assert!(vdc.scroll_line_valid[1], "line 1 should be latched");
         assert!(
-            vdc.scroll_line_valid[VDC_VISIBLE_LINES as usize],
-            "last visible line should be latched"
+            vdc.scroll_line_valid[(VDC_VISIBLE_LINES - 1) as usize],
+            "last active line should be latched"
         );
         assert!(
-            !vdc.scroll_line_valid
-                [(VDC_VISIBLE_LINES as usize + 1).min(LINES_PER_FRAME as usize - 1)],
-            "post-visible lines should remain unlatched until frame is consumed"
+            !vdc.scroll_line_valid[VDC_VISIBLE_LINES as usize],
+            "VBlank line should remain unlatched until frame is consumed"
         );
     }
 
@@ -7334,7 +7309,7 @@ mod tests {
         bus.write_st_port(0, 0x0F);
         bus.write_st_port(1, DMA_CTRL_IRQ_SATB as u8);
         bus.write_st_port(2, 0x00);
-        bus.write_st_port(0, 0x14);
+        bus.write_st_port(0, 0x13);
         bus.write_st_port(1, 0x00);
         bus.write_st_port(2, 0x02);
 
@@ -7376,10 +7351,18 @@ mod tests {
             bus.write_st_port(2, (word >> 8) as u8);
         }
 
-        // Writing the SATB source should latch and copy immediately.
+        // Writing the SATB source schedules a DMA for the next VBlank.
         bus.write_st_port(0, 0x13);
         bus.write_st_port(1, (SATB_SOURCE & 0x00FF) as u8);
         bus.write_st_port(2, (SATB_SOURCE >> 8) as u8);
+
+        // DMA is deferred — SATB should NOT be updated yet.
+        assert_eq!(bus.vdc_satb_word(0), 0, "SATB should not update before VBlank");
+
+        // Advance past VBlank so the deferred DMA executes.
+        for _ in 0..4 {
+            bus.tick(200_000, true);
+        }
 
         for (idx, &expected) in sample.iter().enumerate() {
             assert_eq!(
@@ -7416,11 +7399,11 @@ mod tests {
 
         // Request four words for the upcoming CRAM DMA.
         bus.vdc.registers[0x12] = 0x0004;
-        // Kick the CRAM DMA (bit 1 of DCR).
-        bus.write_st_port(0, 0x0C);
-        bus.write_st_port(1, DCR_ENABLE_CRAM_DMA);
-        bus.write_st_port(2, 0x00);
+        // Schedule CRAM DMA directly (not a standard HuC6270 feature —
+        // our emulator provides this as an internal utility).
+        bus.vdc.schedule_cram_dma();
 
+        // Tick through VBlank so the pending CRAM DMA executes.
         for _ in 0..4 {
             bus.tick(200_000, true);
         }
@@ -7520,7 +7503,7 @@ mod tests {
     }
 
     #[test]
-    fn vdc_dma_status_clears_on_control_write() {
+    fn vdc_dma_status_clears_on_status_read() {
         let mut bus = Bus::new();
         bus.read_io(0x00);
 
@@ -7546,13 +7529,16 @@ mod tests {
             IRQ_REQUEST_IRQ1
         );
 
-        // Writing control with zero should acknowledge the flag and drop the IRQ.
+        // Per MAME: writing DCR does NOT clear status flags.
+        // DV survives the DCR write.
         bus.write_st_port(0, 0x0F);
         bus.write_st_port(1, 0x00);
         bus.write_st_port(2, 0x00);
+        assert_ne!(bus.read_io(0x00) & VDC_STATUS_DV, 0, "DV should survive DCR write");
 
+        // Reading status clears DV and drops the IRQ.
+        assert_eq!(bus.read_io(0x00) & VDC_STATUS_DV, 0, "DV cleared after status read");
         assert_eq!(bus.pending_interrupts() & IRQ_REQUEST_IRQ1, 0);
-        assert_eq!(bus.read_io(0x00) & VDC_STATUS_DV, 0);
     }
 
     #[test]
@@ -7577,7 +7563,7 @@ mod tests {
         bus.write_st_port(2, 0x00);
 
         // Point SATB DMA at $0300.
-        bus.write_st_port(0, 0x14);
+        bus.write_st_port(0, 0x13);
         bus.write_st_port(1, 0x00);
         bus.write_st_port(2, 0x03);
 
@@ -7589,10 +7575,8 @@ mod tests {
         assert_eq!(bus.vdc_satb_word(0), 0xAAAA);
         assert_eq!(bus.vdc_satb_word(1), 0xBBBB);
 
-        // Acknowledge the interrupt while keeping auto-transfer enabled.
-        bus.write_st_port(0, 0x0F);
-        bus.write_st_port(1, (DMA_CTRL_IRQ_SATB | DMA_CTRL_SATB_AUTO) as u8);
-        bus.write_st_port(2, 0x00);
+        // Acknowledge the interrupt by reading status (per real HW).
+        bus.read_io(0x00);
 
         // Change VRAM words to a new pattern.
         bus.write_st_port(0, 0x00);
@@ -7605,10 +7589,13 @@ mod tests {
             bus.write_st_port(2, (word >> 8) as u8);
         }
 
-        // Disable auto-transfer (also acknowledges any pending flag).
+        // Disable auto-transfer.
         bus.write_st_port(0, 0x0F);
         bus.write_st_port(1, DMA_CTRL_IRQ_SATB as u8);
         bus.write_st_port(2, 0x00);
+
+        // Acknowledge any pending DS from the first DMA.
+        bus.read_io(0x00);
 
         // Next frame should not pull new SATB data.
         for _ in 0..4 {
@@ -7641,10 +7628,15 @@ mod tests {
         bus.write_st_port(1, (DMA_CTRL_IRQ_SATB | DMA_CTRL_SATB_AUTO) as u8);
         bus.write_st_port(2, 0x00);
 
-        // Point SATB DMA at $0300. Copy occurs immediately.
-        bus.write_st_port(0, 0x14);
+        // Point SATB DMA at $0300. DMA is deferred to next VBlank.
+        bus.write_st_port(0, 0x13);
         bus.write_st_port(1, 0x00);
         bus.write_st_port(2, 0x03);
+
+        // Advance past VBlank so the deferred DMA executes.
+        for _ in 0..4 {
+            bus.tick(200_000, true);
+        }
 
         assert_eq!(bus.vdc_satb_word(0), 0x1111);
         assert_eq!(bus.vdc_satb_word(1), 0x2222);
