@@ -148,9 +148,7 @@ fn main() -> Result<(), String> {
                         continue;
                     }
 
-                    if code == Keycode::Escape {
-                        quit = true;
-                    } else if let Some(slot) = state_slot_from_keycode(code) {
+                    if let Some(slot) = state_slot_from_keycode(code) {
                         let shift_pressed =
                             keymod.intersects(Mod::LSHIFTMOD | Mod::RSHIFTMOD);
                         let state_path = state_file_path(&rom_path, slot);
