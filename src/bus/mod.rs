@@ -1072,12 +1072,27 @@ impl Bus {
         }
     }
 
+    /// Return the 8KB RAM page currently mapped by MPR1 (zero page / work RAM).
     pub fn work_ram(&self) -> &[u8] {
-        &self.ram[..PAGE_SIZE]
+        let base = self.mpr1_ram_base();
+        &self.ram[base..base + PAGE_SIZE]
     }
 
     pub fn work_ram_mut(&mut self) -> &mut [u8] {
-        &mut self.ram[..PAGE_SIZE]
+        let base = self.mpr1_ram_base();
+        &mut self.ram[base..base + PAGE_SIZE]
+    }
+
+    fn mpr1_ram_base(&self) -> usize {
+        let mpr1 = self.mpr[1];
+        if (0xF8..=0xFD).contains(&mpr1) {
+            let ram_pages = self.total_ram_pages().max(1);
+            let logical = (mpr1 - 0xF8) as usize % ram_pages;
+            logical * PAGE_SIZE
+        } else {
+            // MPR1 doesn't point to RAM (unusual); fall back to bank $F8
+            0
+        }
     }
 
     pub fn load_cart_ram(&mut self, data: &[u8]) -> Result<(), &'static str> {

@@ -33,6 +33,10 @@ pub enum SearchFilter {
     Unchanged,
     IncreasedBy(u8),
     DecreasedBy(u8),
+    /// Search for a decimal value stored as little-endian BCD (1 digit per byte).
+    /// E.g. BcdEqual(13) matches consecutive bytes [0x03, 0x01].
+    /// Returns the address of the lowest digit (ones place).
+    BcdEqual(u16),
 }
 
 impl SearchFilter {
@@ -46,6 +50,20 @@ impl SearchFilter {
                 | Self::IncreasedBy(_)
                 | Self::DecreasedBy(_)
         )
+    }
+
+    /// Convert a decimal value to BCD digit array (ones first).
+    /// E.g. 130 → [0, 3, 1], 13 → [3, 1], 0 → [0].
+    pub fn bcd_digits(mut value: u16) -> Vec<u8> {
+        if value == 0 {
+            return vec![0];
+        }
+        let mut digits = Vec::new();
+        while value > 0 {
+            digits.push((value % 10) as u8);
+            value /= 10;
+        }
+        digits
     }
 }
 
@@ -89,6 +107,31 @@ impl CheatSearch {
     }
 
     pub fn apply_filter(&mut self, filter: SearchFilter, current_ram: &[u8]) {
+        // BCD search: replace candidates with matching start addresses
+        if let SearchFilter::BcdEqual(value) = filter {
+            let digits = SearchFilter::bcd_digits(value);
+            let num_digits = digits.len();
+            let mut matches = Vec::new();
+            let ram_len = current_ram.len();
+            // Check every address in current candidates
+            let candidates = std::mem::take(&mut self.candidates);
+            for &addr in &candidates {
+                let a = addr as usize;
+                if a + num_digits > ram_len {
+                    continue;
+                }
+                let ok = digits.iter().enumerate().all(|(i, &d)| {
+                    current_ram[a + i] == d
+                });
+                if ok {
+                    matches.push(addr);
+                }
+            }
+            self.candidates = matches;
+            self.snapshot = Some(RamSnapshot::capture(current_ram));
+            return;
+        }
+
         let snap = match &self.snapshot {
             Some(s) if filter.needs_snapshot() => s,
             _ if filter.needs_snapshot() => return,

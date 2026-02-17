@@ -13,6 +13,7 @@ enum FilterKind {
     Unchanged,
     IncreasedBy,
     DecreasedBy,
+    BcdEqual,
 }
 
 impl FilterKind {
@@ -28,18 +29,20 @@ impl FilterKind {
             Self::Unchanged => "Unchanged",
             Self::IncreasedBy => "Increased by",
             Self::DecreasedBy => "Decreased by",
+            Self::BcdEqual => "BCD (decimal)",
         }
     }
 
     fn needs_value(&self) -> bool {
         matches!(
             self,
-            Self::Equal | Self::NotEqual | Self::GreaterThan | Self::LessThan | Self::IncreasedBy | Self::DecreasedBy
+            Self::Equal | Self::NotEqual | Self::GreaterThan | Self::LessThan | Self::IncreasedBy | Self::DecreasedBy | Self::BcdEqual
         )
     }
 
-    const ALL: [FilterKind; 10] = [
+    const ALL: [FilterKind; 11] = [
         Self::Equal,
+        Self::BcdEqual,
         Self::NotEqual,
         Self::GreaterThan,
         Self::LessThan,
@@ -50,6 +53,30 @@ impl FilterKind {
         Self::IncreasedBy,
         Self::DecreasedBy,
     ];
+}
+
+/// Decode little-endian BCD starting at `addr`: read consecutive bytes that
+/// are valid BCD digits (0-9) and build a decimal string.
+/// E.g. bytes [3, 1] at addr → "13", bytes [0, 5, 2] → "250".
+fn decode_bcd_at(ram: &[u8], addr: usize) -> String {
+    let mut digits = Vec::new();
+    for i in 0..5 {
+        let a = addr + i;
+        if a >= ram.len() {
+            break;
+        }
+        let b = ram[a];
+        if b > 9 {
+            break;
+        }
+        digits.push(b);
+    }
+    if digits.is_empty() {
+        return "-".to_string();
+    }
+    // digits[0] = ones, digits[1] = tens, etc. — reverse for display
+    let s: String = digits.iter().rev().map(|d| char::from(b'0' + d)).collect();
+    s
 }
 
 /// Format an address with region label: W:xxxx or C:xxxx
@@ -104,6 +131,8 @@ pub struct CheatSearchUi {
     filter_value: String,
     new_cheat_label: String,
     new_cheat_value: String,
+    /// Number of BCD digits from the last BCD search (0 = not a BCD search).
+    last_bcd_digits: usize,
 }
 
 impl CheatSearchUi {
@@ -115,6 +144,7 @@ impl CheatSearchUi {
             filter_value: String::new(),
             new_cheat_label: String::new(),
             new_cheat_value: String::new(),
+            last_bcd_digits: 0,
         }
     }
 
@@ -157,6 +187,7 @@ impl CheatSearchUi {
             ui.label("Filter:");
             egui::ComboBox::from_id_salt("filter_kind")
                 .selected_text(self.filter_kind.label())
+                .width(130.0)
                 .show_ui(ui, |ui| {
                     for kind in FilterKind::ALL {
                         ui.selectable_value(&mut self.filter_kind, kind, kind.label());
@@ -167,12 +198,17 @@ impl CheatSearchUi {
                 ui.label("Value:");
                 ui.add(
                     egui::TextEdit::singleline(&mut self.filter_value)
-                        .desired_width(40.0),
+                        .desired_width(50.0),
                 );
             }
 
             if ui.button("Apply").clicked() {
                 if let Some(filter) = self.build_filter() {
+                    if let SearchFilter::BcdEqual(v) = filter {
+                        self.last_bcd_digits = SearchFilter::bcd_digits(v).len();
+                    } else {
+                        self.last_bcd_digits = 0;
+                    }
                     self.search.apply_filter(filter, ram);
                 }
             }
@@ -202,9 +238,11 @@ impl CheatSearchUi {
                         ui.label("Addr");
                         ui.label("Prev");
                         ui.label("Cur");
+                        ui.label("BCD");
                         ui.label("");
                         ui.end_row();
 
+                        let bcd_n = self.last_bcd_digits;
                         for &addr in candidates.iter().take(max_display) {
                             let cur = ram.get(addr as usize).copied().unwrap_or(0);
                             let prev = snap.map(|s| s.get(addr)).unwrap_or(0);
@@ -212,12 +250,29 @@ impl CheatSearchUi {
                             ui.label(format_addr(addr, wram_size));
                             ui.label(format!("{:02X}", prev));
                             ui.label(format!("{:02X}", cur));
-                            if ui.small_button("Add").clicked() {
-                                self.manager.add(
-                                    addr,
-                                    cur,
-                                    format_addr(addr, wram_size),
-                                );
+                            // Decode BCD value from consecutive bytes (up to 5 digits)
+                            ui.label(decode_bcd_at(ram, addr as usize));
+                            if bcd_n >= 2 {
+                                // BCD search: "Add" registers all digit bytes
+                                if ui.small_button(format!("Add {}d", bcd_n)).clicked() {
+                                    for i in 0..bcd_n {
+                                        let a = addr + i as u32;
+                                        let v = ram.get(a as usize).copied().unwrap_or(0);
+                                        self.manager.add(
+                                            a,
+                                            v,
+                                            format!("{}[{}]", format_addr(addr, wram_size), i),
+                                        );
+                                    }
+                                }
+                            } else {
+                                if ui.small_button("Add").clicked() {
+                                    self.manager.add(
+                                        addr,
+                                        cur,
+                                        format_addr(addr, wram_size),
+                                    );
+                                }
                             }
                             ui.end_row();
                         }
@@ -303,6 +358,10 @@ impl CheatSearchUi {
             FilterKind::Unchanged => Some(SearchFilter::Unchanged),
             FilterKind::IncreasedBy => parse_val().map(SearchFilter::IncreasedBy),
             FilterKind::DecreasedBy => parse_val().map(SearchFilter::DecreasedBy),
+            FilterKind::BcdEqual => {
+                // Parse as decimal number (not hex)
+                self.filter_value.trim().parse::<u16>().ok().map(SearchFilter::BcdEqual)
+            }
         }
     }
 }
