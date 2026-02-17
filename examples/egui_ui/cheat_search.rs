@@ -79,6 +79,15 @@ fn decode_bcd_at(ram: &[u8], addr: usize) -> String {
     s
 }
 
+/// Parse a u8 value: try decimal first, then hex (with optional 0x prefix).
+fn parse_u8_value(input: &str) -> Option<u8> {
+    let s = input.trim();
+    s.parse::<u8>().ok().or_else(|| {
+        let h = s.trim_start_matches("0x").trim_start_matches("0X");
+        u8::from_str_radix(h, 16).ok()
+    })
+}
+
 /// Format an address with region label: W:xxxx or C:xxxx
 fn format_addr(addr: u32, wram_size: usize) -> String {
     if (addr as usize) < wram_size {
@@ -119,6 +128,10 @@ fn parse_cheat_addr(input: &str, wram_size: usize, cram_size: usize) -> Option<u
         None
     } else if (raw as usize) < wram_size + cram_size {
         Some(raw)
+    } else if (0x2000..0x4000).contains(&raw) {
+        // CPU address $2000-$3FFF → MPR1 WRAM offset
+        let offset = (raw - 0x2000) as usize;
+        if offset < wram_size { Some(offset as u32) } else { None }
     } else {
         None
     }
@@ -234,14 +247,8 @@ impl CheatSearchUi {
 
         let candidates = self.search.candidates();
         let snap = self.search.previous_snapshot();
-        let max_display = 200;
-        let display_count = candidates.len().min(max_display);
 
-        ui.label(format!(
-            "Results (showing {}/{})",
-            display_count,
-            candidates.len()
-        ));
+        ui.label(format!("Results: {}", candidates.len()));
 
         egui::ScrollArea::vertical()
             .id_salt("cheat_results")
@@ -259,7 +266,7 @@ impl CheatSearchUi {
                         ui.end_row();
 
                         let bcd_n = self.last_bcd_digits;
-                        for &addr in candidates.iter().take(max_display) {
+                        for &addr in candidates.iter() {
                             let cur = ram.get(addr as usize).copied().unwrap_or(0);
                             let prev = snap.map(|s| s.get(addr)).unwrap_or(0);
 
@@ -334,7 +341,7 @@ impl CheatSearchUi {
                                 .desired_width(25.0),
                         );
                         if resp.changed() {
-                            if let Ok(v) = u8::from_str_radix(val_str.trim(), 16) {
+                            if let Some(v) = parse_u8_value(&val_str) {
                                 entry.value = v;
                             }
                         }
@@ -366,9 +373,9 @@ impl CheatSearchUi {
             );
             let cram_size = ram.len().saturating_sub(wram_size);
             if ui.button("Add").clicked() {
-                if let (Some(addr), Ok(val)) = (
+                if let (Some(addr), Some(val)) = (
                     parse_cheat_addr(&self.new_cheat_label, wram_size, cram_size),
-                    u8::from_str_radix(self.new_cheat_value.trim(), 16),
+                    parse_u8_value(&self.new_cheat_value),
                 ) {
                     self.manager.add(addr, val, format_addr(addr, wram_size));
                     self.new_cheat_label.clear();
