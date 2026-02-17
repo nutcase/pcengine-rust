@@ -187,6 +187,7 @@ impl CheatSearch {
 }
 
 #[derive(Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CheatEntry {
     pub address: u32,
     pub value: u8,
@@ -227,6 +228,25 @@ impl CheatManager {
                 ram[entry.address as usize] = entry.value;
             }
         }
+    }
+
+    /// Save cheat entries to a JSON file.
+    #[cfg(feature = "serde")]
+    pub fn save_to_file(&self, path: &std::path::Path) -> Result<(), String> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        let json = serde_json::to_string_pretty(&self.entries).map_err(|e| e.to_string())?;
+        std::fs::write(path, json).map_err(|e| e.to_string())
+    }
+
+    /// Load cheat entries from a JSON file.
+    #[cfg(feature = "serde")]
+    pub fn load_from_file(&mut self, path: &std::path::Path) -> Result<(), String> {
+        let data = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+        let entries: Vec<CheatEntry> = serde_json::from_str(&data).map_err(|e| e.to_string())?;
+        self.entries = entries;
+        Ok(())
     }
 }
 

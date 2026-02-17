@@ -109,6 +109,8 @@ fn main() -> Result<(), String> {
     let mut prev_panel_visible = cheat_ui.panel_visible;
     let mut panel_width_px: u32 = PANEL_WIDTH_DEFAULT as u32;
 
+    let cheat_path = cheat_file_path(&rom_path);
+
     while !quit {
         egui_state.input.time = Some(
             std::time::SystemTime::now()
@@ -305,7 +307,7 @@ fn main() -> Result<(), String> {
                             egui::ScrollArea::vertical()
                                 .auto_shrink([false, false])
                                 .show(ui, |ui| {
-                                    cheat_ui.show_panel(ui, &mut ram_writes, live_ram);
+                                    cheat_ui.show_panel(ui, &mut ram_writes, live_ram, Some(&cheat_path));
                                 });
                         });
                     // Track actual panel width for GL viewport
@@ -423,4 +425,13 @@ fn state_file_path(rom_path: &str, slot: usize) -> PathBuf {
         .filter(|name| !name.is_empty())
         .unwrap_or("game");
     PathBuf::from("states").join(format!("{stem}.slot{slot}.state"))
+}
+
+fn cheat_file_path(rom_path: &str) -> PathBuf {
+    let stem = Path::new(rom_path)
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or("game");
+    PathBuf::from("cheats").join(format!("{stem}.json"))
 }

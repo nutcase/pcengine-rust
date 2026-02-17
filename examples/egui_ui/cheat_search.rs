@@ -133,6 +133,8 @@ pub struct CheatSearchUi {
     new_cheat_value: String,
     /// Number of BCD digits from the last BCD search (0 = not a BCD search).
     last_bcd_digits: usize,
+    /// Whether cheats have been loaded from file (one-shot on first show).
+    cheats_loaded: bool,
 }
 
 impl CheatSearchUi {
@@ -145,12 +147,26 @@ impl CheatSearchUi {
             new_cheat_label: String::new(),
             new_cheat_value: String::new(),
             last_bcd_digits: 0,
+            cheats_loaded: false,
         }
     }
 
-    pub fn show(&mut self, ui: &mut egui::Ui, ram: &[u8]) {
+    pub fn show(&mut self, ui: &mut egui::Ui, ram: &[u8], cheat_path: Option<&std::path::Path>) {
         let wram_size = WORK_RAM_SIZE;
         let has_cram = ram.len() > wram_size;
+
+        // Auto-load cheats from file on first call
+        if !self.cheats_loaded {
+            self.cheats_loaded = true;
+            if let Some(path) = cheat_path {
+                if path.exists() {
+                    match self.manager.load_from_file(path) {
+                        Ok(()) => eprintln!("Loaded {} cheats from {}", self.manager.entries.len(), path.display()),
+                        Err(e) => eprintln!("Failed to load cheats: {}", e),
+                    }
+                }
+            }
+        }
 
         ui.horizontal(|ui| {
             ui.heading("Cheat Search");
@@ -280,7 +296,26 @@ impl CheatSearchUi {
             });
 
         ui.separator();
-        ui.heading("Active Cheats");
+        ui.horizontal(|ui| {
+            ui.heading("Active Cheats");
+            ui.separator();
+            if let Some(path) = cheat_path {
+                if ui.button("Save").clicked() {
+                    match self.manager.save_to_file(path) {
+                        Ok(()) => eprintln!("Saved {} cheats to {}", self.manager.entries.len(), path.display()),
+                        Err(e) => eprintln!("Failed to save cheats: {}", e),
+                    }
+                }
+                if path.exists() {
+                    if ui.button("Load").clicked() {
+                        match self.manager.load_from_file(path) {
+                            Ok(()) => eprintln!("Loaded {} cheats from {}", self.manager.entries.len(), path.display()),
+                            Err(e) => eprintln!("Failed to load cheats: {}", e),
+                        }
+                    }
+                }
+            }
+        });
 
         let mut remove_idx = None;
         egui::ScrollArea::vertical()

@@ -7,7 +7,7 @@ edition = "2024"
 default = []
 audio-sdl = ["sdl2"]
 video-sdl = ["sdl2"]
-cheat-ui = ["sdl2", "egui", "egui_sdl2_gl"]
+cheat-ui = ["sdl2", "egui", "egui_sdl2_gl", "serde", "serde_json"]
 trace_hw_writes = []
 
 [dependencies]
@@ -15,6 +15,8 @@ sdl2 = { version = "0.36", features = ["bundled"], optional = true }
 bincode = { version = "2.0.1", features = ["derive"] }
 egui = { version = "0.31", optional = true }
 egui_sdl2_gl = { version = "0.31", optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
 
 [[example]]
 name = "audio_sdl"

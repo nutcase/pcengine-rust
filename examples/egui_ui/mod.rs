@@ -50,6 +50,7 @@ impl CheatToolUi {
         ui: &mut egui::Ui,
         ram_writes: &mut Vec<(usize, u8)>,
         live_ram: &[u8],
+        cheat_path: Option<&std::path::Path>,
     ) {
         ui.horizontal(|ui| {
             ui.selectable_value(&mut self.active_tab, ActiveTab::HexViewer, "Hex Viewer");
@@ -72,7 +73,7 @@ impl CheatToolUi {
                 self.hex_viewer.show(ui, snap, ram_writes);
             }
             ActiveTab::CheatSearch => {
-                self.cheat_search_ui.show(ui, live_ram);
+                self.cheat_search_ui.show(ui, live_ram, cheat_path);
             }
         }
     }
