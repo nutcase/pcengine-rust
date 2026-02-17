@@ -153,11 +153,35 @@ impl GlGameRenderer {
         }
     }
 
-    /// Draw the game quad into the given viewport region.
+    /// Draw the game quad into the given viewport region, letter/pillar-boxed
+    /// to maintain the original aspect ratio (tex_w : tex_h).
     /// `vp_x, vp_y` are in GL coordinates (Y from bottom).
     pub fn draw(&self, vp_x: i32, vp_y: i32, vp_w: i32, vp_h: i32) {
+        if vp_w <= 0 || vp_h <= 0 || self.tex_w == 0 || self.tex_h == 0 {
+            return;
+        }
+
+        // Compute letterbox/pillarbox viewport preserving source aspect ratio
+        let src_aspect = self.tex_w as f64 / self.tex_h as f64;
+        let dst_aspect = vp_w as f64 / vp_h as f64;
+
+        let (fit_w, fit_h) = if dst_aspect > src_aspect {
+            // Destination is wider → pillarbox (black bars on sides)
+            let h = vp_h;
+            let w = (vp_h as f64 * src_aspect).round() as i32;
+            (w, h)
+        } else {
+            // Destination is taller → letterbox (black bars top/bottom)
+            let w = vp_w;
+            let h = (vp_w as f64 / src_aspect).round() as i32;
+            (w, h)
+        };
+
+        let fit_x = vp_x + (vp_w - fit_w) / 2;
+        let fit_y = vp_y + (vp_h - fit_h) / 2;
+
         unsafe {
-            gl::Viewport(vp_x, vp_y, vp_w, vp_h);
+            gl::Viewport(fit_x, fit_y, fit_w, fit_h);
             gl::Disable(gl::BLEND);
             gl::Disable(gl::SCISSOR_TEST);
             gl::UseProgram(self.program);

@@ -24,8 +24,8 @@ const AUDIO_QUEUE_CRITICAL: usize = AUDIO_BATCH;
 const MAX_EMU_STEPS_PER_PUMP: usize = 120_000;
 const MAX_STEPS_AFTER_FRAME: usize = 30_000;
 const MAX_PRESENT_INTERVAL: Duration = Duration::from_millis(33);
-const PANEL_HEIGHT_DEFAULT: f32 = 450.0;
-const PANEL_HEIGHT_MIN: f32 = 200.0;
+const PANEL_WIDTH_DEFAULT: f32 = 420.0;
+const PANEL_WIDTH_MIN: f32 = 300.0;
 
 fn main() -> Result<(), String> {
     let mut args = std::env::args().skip(1);
@@ -107,7 +107,7 @@ fn main() -> Result<(), String> {
     let mut game_renderer = GlGameRenderer::new();
     let mut cheat_ui = CheatToolUi::new();
     let mut prev_panel_visible = cheat_ui.panel_visible;
-    let mut panel_height_px: u32 = PANEL_HEIGHT_DEFAULT as u32;
+    let mut panel_width_px: u32 = PANEL_WIDTH_DEFAULT as u32;
 
     while !quit {
         egui_state.input.time = Some(
@@ -194,12 +194,12 @@ fn main() -> Result<(), String> {
             if cheat_ui.panel_visible {
                 cheat_ui.refresh(emulator.work_ram());
             }
-            let new_h = if cheat_ui.panel_visible {
-                game_h + panel_height_px
+            let new_w = if cheat_ui.panel_visible {
+                game_w + panel_width_px
             } else {
-                game_h
+                game_w
             };
-            let _ = window.set_size(game_w, new_h);
+            let _ = window.set_size(new_w, game_h);
             prev_panel_visible = cheat_ui.panel_visible;
         }
 
@@ -273,11 +273,11 @@ fn main() -> Result<(), String> {
                 gl::Clear(gl::COLOR_BUFFER_BIT);
             }
 
-            // Draw game quad in the top portion via raw GL (zero egui overhead)
-            let panel_px = if cheat_ui.panel_visible { panel_height_px } else { 0 };
-            let game_vp_h = win_h.saturating_sub(panel_px);
-            // GL viewport Y is from bottom; game sits above the panel
-            game_renderer.draw(0, panel_px as i32, win_w as i32, game_vp_h as i32);
+            // Draw game quad on the left; panel occupies the right
+            let panel_px = if cheat_ui.panel_visible { panel_width_px } else { 0 };
+            let game_vp_w = win_w.saturating_sub(panel_px);
+            // GL viewport: game on left, full height
+            game_renderer.draw(0, 0, game_vp_w as i32, win_h as i32);
 
             // Draw panel when visible — egui renders directly to the screen
             if cheat_ui.panel_visible {
@@ -297,10 +297,10 @@ fn main() -> Result<(), String> {
                 let live_ram = &combined_ram;
 
                 let full_output = egui_ctx.run(egui_state.input.take(), |ctx| {
-                    let panel_resp = egui::TopBottomPanel::bottom("cheat_panel")
+                    let panel_resp = egui::SidePanel::right("cheat_panel")
                         .resizable(true)
-                        .min_height(PANEL_HEIGHT_MIN)
-                        .default_height(PANEL_HEIGHT_DEFAULT)
+                        .min_width(PANEL_WIDTH_MIN)
+                        .default_width(PANEL_WIDTH_DEFAULT)
                         .show(ctx, |ui| {
                             egui::ScrollArea::vertical()
                                 .auto_shrink([false, false])
@@ -308,13 +308,13 @@ fn main() -> Result<(), String> {
                                     cheat_ui.show_panel(ui, &mut ram_writes, live_ram);
                                 });
                         });
-                    // Track actual panel height for GL viewport
-                    let actual_h = panel_resp.response.rect.height() as u32;
-                    if actual_h != panel_height_px {
-                        panel_height_px = actual_h;
-                        // Resize window to match new panel height
-                        let new_h = game_h + panel_height_px;
-                        let _ = window.set_size(game_w, new_h);
+                    // Track actual panel width for GL viewport
+                    let actual_w = panel_resp.response.rect.width() as u32;
+                    if actual_w != panel_width_px {
+                        panel_width_px = actual_w;
+                        // Resize window to match new panel width
+                        let new_w = game_w + panel_width_px;
+                        let _ = window.set_size(new_w, game_h);
                     }
                 });
 

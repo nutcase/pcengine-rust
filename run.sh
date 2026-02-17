@@ -61,5 +61,5 @@ cmd=(cargo run)
 if [[ "$release_mode" -eq 1 ]]; then
     cmd+=(--release)
 fi
-cmd+=(--example video_sdl --features video-sdl -- "$rom_path")
+cmd+=(--example pc_engine --features cheat-ui -- "$rom_path")
 exec "${cmd[@]}"
