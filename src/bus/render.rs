@@ -47,16 +47,29 @@ impl Bus {
             background_line_enabled[y] = background_enabled;
             sprite_line_enabled[y] = sprites_enabled;
         }
-        if !background_line_enabled.iter().any(|&enabled| enabled)
-            && !sprite_line_enabled.iter().any(|&enabled| enabled)
-        {
+        let any_bg = background_line_enabled.iter().any(|&e| e);
+        let any_spr = sprite_line_enabled.iter().any(|&e| e);
+
+        // Track burst-mode transitions: when the VDC goes through burst mode
+        // (both BG and SPR off) and then enters SPR-only, the game is
+        // preparing a new scene.  Sprite rendering is suppressed until BG is
+        // re-enabled so that partially-loaded content doesn't flash.
+        // Games that enter SPR-only WITHOUT a preceding burst (e.g.
+        // Bikkuriman World result screen) render sprites normally.
+        if !any_bg && !any_spr {
+            // Burst mode: enter transition state.
+            *self.burst_transition = true;
+        } else if any_bg {
+            // BG active: scene is ready, clear transition.
+            *self.burst_transition = false;
+        }
+
+        if !any_bg && !any_spr {
             // Burst mode: both BG and SPR are disabled for the entire frame.
-            // The VDC does not drive any pixel data; the display is blank
-            // (black).  VCE[0] is NOT used here — the VDC simply outputs no
-            // colour information in burst mode.
+            // The VDC does not drive pixel data — the screen is black.
             for y in 0..FRAME_HEIGHT {
                 let row_start = y * FRAME_WIDTH;
-                self.framebuffer[row_start..row_start + display_width].fill(0x000000);
+                self.framebuffer[row_start..row_start + display_width].fill(0xFF000000);
             }
             self.frame_ready = true;
             return;
@@ -95,7 +108,14 @@ impl Bus {
         }
         self.vdc.clear_sprite_overflow();
 
-        let background_colour = self.vce.palette_rgb(0);
+        let background_colour = if *self.burst_transition {
+            // During burst→SPR-only transition, the game is preparing a new
+            // scene (loading VRAM/palettes).  Use black backdrop so that the
+            // intermediate VCE palette[0] value doesn't flash on screen.
+            0xFF000000
+        } else {
+            self.vce.palette_rgb(0)
+        };
         if Self::env_force_test_palette() {
             // デバッグ: パレットを簡易グラデーションに初期化
             for i in 0..self.vce.palette.len() {
@@ -134,12 +154,13 @@ impl Bus {
             for y in 0..FRAME_HEIGHT {
                 let line_state_index = self.vdc.line_state_index_for_frame_row(y);
                 if !background_line_enabled[y] {
-                    // BG disabled on this line: fill black.
-                    // Covers overscan, burst mode (BG+SPR off), and
-                    // sprite-only lines (BG off, SPR on) during transitions.
+                    // BG disabled on this line: VCE palette[0] backdrop.
+                    // When BG is off the VDC doesn't drive BG pixel data;
+                    // the VCE fills with palette[0] (per MAME huc6260).
+                    // Sprites may overlay on top if SPR is enabled.
                     let row_start = y * FRAME_WIDTH;
                     let row_end = row_start + display_width;
-                    self.framebuffer[row_start..row_end].fill(0x000000);
+                    self.framebuffer[row_start..row_end].fill(background_colour);
                     continue;
                 }
                 let _active_row = self.vdc.active_row_for_output_row(y).unwrap_or(0);
@@ -328,19 +349,15 @@ impl Bus {
                 }
             }
         } else {
-            // No BG-enabled lines — all black (burst mode / sprite-only transitions).
+            // No BG-enabled lines — fill with VCE palette[0] backdrop.
+            // This covers sprite-only mode (BG off, SPR on) where the VDC
+            // doesn't generate BG pixels; the VCE provides palette[0].
             for y in 0..FRAME_HEIGHT {
                 let row_start = y * FRAME_WIDTH;
-                self.framebuffer[row_start..row_start + display_width].fill(0x000000);
+                self.framebuffer[row_start..row_start + display_width].fill(background_colour);
             }
         }
-        // Only render sprites when BG is active on at least one line.
-        // When BG is entirely off (scene transitions: burst → sprite-only),
-        // the game is still setting up VRAM/palette; rendering sprites here
-        // would flash partially-loaded content.  Once BG is re-enabled the
-        // scene is ready and sprites render normally.
-        let any_bg = background_line_enabled.iter().any(|&e| e);
-        if any_bg && sprite_line_enabled.iter().any(|&enabled| enabled) {
+        if any_spr && !*self.burst_transition {
             self.render_sprites(&sprite_line_enabled);
         }
 

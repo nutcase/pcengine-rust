@@ -1218,9 +1218,9 @@ fn render_blank_frame_uses_palette_zero() {
 
     let frame = bus.take_frame().expect("expected frame after VBlank");
     assert_eq!(frame.len(), bus.display_width() * bus.display_height());
-    // With both BG and SPR disabled the VDC is in burst mode — the screen
-    // should be black (0x000000) regardless of VCE[0].
-    assert!(frame.iter().all(|&pixel| pixel == 0x000000));
+    // With both BG and SPR disabled the VDC is in burst mode — no pixel
+    // data is driven.  The display is black.
+    assert!(frame.iter().all(|&pixel| pixel == 0xFF000000));
 }
 
 #[test]

@@ -40,6 +40,43 @@ mod render;
 
 use font::FONT;
 
+/// A `bool` wrapper that is invisible to bincode serialization.
+/// Encodes as zero bytes; decodes as `false`.  Used for transient render
+/// state that must survive struct derivation but not save-state files.
+#[derive(Clone, Copy, Default)]
+struct TransientBool(bool);
+
+impl bincode::Encode for TransientBool {
+    fn encode<E: bincode::enc::Encoder>(&self, _encoder: &mut E) -> Result<(), bincode::error::EncodeError> {
+        Ok(()) // write nothing
+    }
+}
+
+impl<Context> bincode::Decode<Context> for TransientBool {
+    fn decode<D: bincode::de::Decoder>(
+        _decoder: &mut D,
+    ) -> Result<Self, bincode::error::DecodeError> {
+        Ok(Self(false))
+    }
+}
+
+impl<'de, Context> bincode::BorrowDecode<'de, Context> for TransientBool {
+    fn borrow_decode<D: bincode::de::BorrowDecoder<'de>>(
+        _decoder: &mut D,
+    ) -> Result<Self, bincode::error::DecodeError> {
+        Ok(Self(false))
+    }
+}
+
+impl core::ops::Deref for TransientBool {
+    type Target = bool;
+    fn deref(&self) -> &bool { &self.0 }
+}
+
+impl core::ops::DerefMut for TransientBool {
+    fn deref_mut(&mut self) -> &mut bool { &mut self.0 }
+}
+
 
 
 #[derive(Clone, Copy, bincode::Encode, bincode::Decode)]
@@ -77,6 +114,14 @@ pub struct Bus {
     bg_opaque: Vec<bool>,
     bg_priority: Vec<bool>,
     sprite_line_counts: Vec<u8>,
+    /// True while in a post-burst-mode transition: the VDC went through burst
+    /// mode (both BG and SPR off) and is now in SPR-only mode.  During this
+    /// window the game is setting up the new scene; rendering sprites would
+    /// flash partially-loaded content.  Cleared when BG is re-enabled (scene
+    /// ready).  This matches CRT behavior where the brief sprite flash during
+    /// scene transitions is invisible due to phosphor response/blanking.
+    /// Not serialized — transient render state, safe to default to false.
+    burst_transition: TransientBool,
     #[cfg(feature = "trace_hw_writes")]
     last_pc_for_trace: Option<u16>,
     #[cfg(debug_assertions)]
@@ -113,6 +158,7 @@ impl Bus {
             bg_opaque: vec![false; FRAME_WIDTH * FRAME_HEIGHT],
             bg_priority: vec![false; FRAME_WIDTH * FRAME_HEIGHT],
             sprite_line_counts: vec![0; FRAME_HEIGHT],
+            burst_transition: TransientBool(false),
             #[cfg(feature = "trace_hw_writes")]
             last_pc_for_trace: None,
             #[cfg(debug_assertions)]
@@ -929,6 +975,10 @@ impl Bus {
         self.vdc.control()
     }
 
+    pub fn vdc_control_for_render(&self) -> u16 {
+        self.vdc.control_for_render()
+    }
+
     pub fn vdc_mawr(&self) -> u16 {
         self.vdc.mawr
     }
@@ -951,6 +1001,10 @@ impl Bus {
 
     pub fn vdc_satb_word(&self, index: usize) -> u16 {
         self.vdc.satb.get(index).copied().unwrap_or(0)
+    }
+
+    pub fn vdc_dma_control(&self) -> u16 {
+        self.vdc.dma_control
     }
 
     pub fn vdc_scroll_line(&self, line: usize) -> (u16, u16) {
@@ -1016,6 +1070,14 @@ impl Bus {
         } else {
             Some(&mut self.cart_ram)
         }
+    }
+
+    pub fn work_ram(&self) -> &[u8] {
+        &self.ram[..PAGE_SIZE]
+    }
+
+    pub fn work_ram_mut(&mut self) -> &mut [u8] {
+        &mut self.ram[..PAGE_SIZE]
     }
 
     pub fn load_cart_ram(&mut self, data: &[u8]) -> Result<(), &'static str> {
