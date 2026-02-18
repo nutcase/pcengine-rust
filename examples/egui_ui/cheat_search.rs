@@ -36,7 +36,13 @@ impl FilterKind {
     fn needs_value(&self) -> bool {
         matches!(
             self,
-            Self::Equal | Self::NotEqual | Self::GreaterThan | Self::LessThan | Self::IncreasedBy | Self::DecreasedBy | Self::BcdEqual
+            Self::Equal
+                | Self::NotEqual
+                | Self::GreaterThan
+                | Self::LessThan
+                | Self::IncreasedBy
+                | Self::DecreasedBy
+                | Self::BcdEqual
         )
     }
 
@@ -131,7 +137,11 @@ fn parse_cheat_addr(input: &str, wram_size: usize, cram_size: usize) -> Option<u
     } else if (0x2000..0x4000).contains(&raw) {
         // CPU address $2000-$3FFF → MPR1 WRAM offset
         let offset = (raw - 0x2000) as usize;
-        if offset < wram_size { Some(offset as u32) } else { None }
+        if offset < wram_size {
+            Some(offset as u32)
+        } else {
+            None
+        }
     } else {
         None
     }
@@ -174,7 +184,11 @@ impl CheatSearchUi {
             if let Some(path) = cheat_path {
                 if path.exists() {
                     match self.manager.load_from_file(path) {
-                        Ok(()) => eprintln!("Loaded {} cheats from {}", self.manager.entries.len(), path.display()),
+                        Ok(()) => eprintln!(
+                            "Loaded {} cheats from {}",
+                            self.manager.entries.len(),
+                            path.display()
+                        ),
                         Err(e) => eprintln!("Failed to load cheats: {}", e),
                     }
                 }
@@ -206,7 +220,9 @@ impl CheatSearchUi {
             }
             ui.label(format!("Candidates: {}", self.search.candidate_count()));
             if self.search.has_snapshot() {
-                ui.label(RichText::new("(snapshot taken)").color(Color32::from_rgb(0x44, 0xCC, 0x44)));
+                ui.label(
+                    RichText::new("(snapshot taken)").color(Color32::from_rgb(0x44, 0xCC, 0x44)),
+                );
             }
         });
 
@@ -225,10 +241,7 @@ impl CheatSearchUi {
 
             if self.filter_kind.needs_value() {
                 ui.label("Value:");
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.filter_value)
-                        .desired_width(50.0),
-                );
+                ui.add(egui::TextEdit::singleline(&mut self.filter_value).desired_width(50.0));
             }
 
             if ui.button("Apply").clicked() {
@@ -249,57 +262,53 @@ impl CheatSearchUi {
         let snap = self.search.previous_snapshot();
 
         ui.label(format!("Results: {}", candidates.len()));
+        ui.horizontal(|ui| {
+            ui.style_mut().override_font_id = Some(egui::FontId::monospace(12.0));
+            ui.label("Addr");
+            ui.label("Prev");
+            ui.label("Cur");
+            ui.label("BCD");
+            ui.label("");
+        });
 
+        let bcd_n = self.last_bcd_digits;
+        let row_height = (ui.text_style_height(&egui::TextStyle::Monospace) + 4.0).max(16.0);
         egui::ScrollArea::vertical()
             .id_salt("cheat_results")
             .max_height(150.0)
-            .show(ui, |ui| {
+            .show_rows(ui, row_height, candidates.len(), |ui, row_range| {
                 ui.style_mut().override_font_id = Some(egui::FontId::monospace(12.0));
-                egui::Grid::new("results_grid")
-                    .striped(true)
-                    .show(ui, |ui| {
-                        ui.label("Addr");
-                        ui.label("Prev");
-                        ui.label("Cur");
-                        ui.label("BCD");
-                        ui.label("");
-                        ui.end_row();
+                for row_idx in row_range {
+                    let Some(&addr) = candidates.get(row_idx) else {
+                        continue;
+                    };
+                    let cur = ram.get(addr as usize).copied().unwrap_or(0);
+                    let prev = snap.map(|s| s.get(addr)).unwrap_or(0);
 
-                        let bcd_n = self.last_bcd_digits;
-                        for &addr in candidates.iter() {
-                            let cur = ram.get(addr as usize).copied().unwrap_or(0);
-                            let prev = snap.map(|s| s.get(addr)).unwrap_or(0);
-
-                            ui.label(format_addr(addr, wram_size));
-                            ui.label(format!("{:02X}", prev));
-                            ui.label(format!("{:02X}", cur));
-                            // Decode BCD value from consecutive bytes (up to 5 digits)
-                            ui.label(decode_bcd_at(ram, addr as usize));
-                            if bcd_n >= 2 {
-                                // BCD search: "Add" registers all digit bytes
-                                if ui.small_button(format!("Add {}d", bcd_n)).clicked() {
-                                    for i in 0..bcd_n {
-                                        let a = addr + i as u32;
-                                        let v = ram.get(a as usize).copied().unwrap_or(0);
-                                        self.manager.add(
-                                            a,
-                                            v,
-                                            format!("{}[{}]", format_addr(addr, wram_size), i),
-                                        );
-                                    }
-                                }
-                            } else {
-                                if ui.small_button("Add").clicked() {
+                    ui.horizontal(|ui| {
+                        ui.label(format_addr(addr, wram_size));
+                        ui.label(format!("{:02X}", prev));
+                        ui.label(format!("{:02X}", cur));
+                        // Decode BCD value from consecutive bytes (up to 5 digits)
+                        ui.label(decode_bcd_at(ram, addr as usize));
+                        if bcd_n >= 2 {
+                            // BCD search: "Add" registers all digit bytes
+                            if ui.small_button(format!("Add {}d", bcd_n)).clicked() {
+                                for i in 0..bcd_n {
+                                    let a = addr + i as u32;
+                                    let v = ram.get(a as usize).copied().unwrap_or(0);
                                     self.manager.add(
-                                        addr,
-                                        cur,
-                                        format_addr(addr, wram_size),
+                                        a,
+                                        v,
+                                        format!("{}[{}]", format_addr(addr, wram_size), i),
                                     );
                                 }
                             }
-                            ui.end_row();
+                        } else if ui.small_button("Add").clicked() {
+                            self.manager.add(addr, cur, format_addr(addr, wram_size));
                         }
                     });
+                }
             });
 
         ui.separator();
@@ -309,14 +318,22 @@ impl CheatSearchUi {
             if let Some(path) = cheat_path {
                 if ui.button("Save").clicked() {
                     match self.manager.save_to_file(path) {
-                        Ok(()) => eprintln!("Saved {} cheats to {}", self.manager.entries.len(), path.display()),
+                        Ok(()) => eprintln!(
+                            "Saved {} cheats to {}",
+                            self.manager.entries.len(),
+                            path.display()
+                        ),
                         Err(e) => eprintln!("Failed to save cheats: {}", e),
                     }
                 }
                 if path.exists() {
                     if ui.button("Load").clicked() {
                         match self.manager.load_from_file(path) {
-                            Ok(()) => eprintln!("Loaded {} cheats from {}", self.manager.entries.len(), path.display()),
+                            Ok(()) => eprintln!(
+                                "Loaded {} cheats from {}",
+                                self.manager.entries.len(),
+                                path.display()
+                            ),
                             Err(e) => eprintln!("Failed to load cheats: {}", e),
                         }
                     }
@@ -336,10 +353,8 @@ impl CheatSearchUi {
                         ui.label(format_addr(entry.address, wram_size));
                         ui.label("=");
                         let mut val_str = format!("{:02X}", entry.value);
-                        let resp = ui.add(
-                            egui::TextEdit::singleline(&mut val_str)
-                                .desired_width(25.0),
-                        );
+                        let resp =
+                            ui.add(egui::TextEdit::singleline(&mut val_str).desired_width(25.0));
                         if resp.changed() {
                             if let Some(v) = parse_u8_value(&val_str) {
                                 entry.value = v;
@@ -386,8 +401,20 @@ impl CheatSearchUi {
     }
 
     fn build_filter(&self) -> Option<SearchFilter> {
-        let parse_val = || u8::from_str_radix(self.filter_value.trim(), 10).ok()
-            .or_else(|| u8::from_str_radix(self.filter_value.trim().trim_start_matches("0x").trim_start_matches("0X"), 16).ok());
+        let parse_val = || {
+            u8::from_str_radix(self.filter_value.trim(), 10)
+                .ok()
+                .or_else(|| {
+                    u8::from_str_radix(
+                        self.filter_value
+                            .trim()
+                            .trim_start_matches("0x")
+                            .trim_start_matches("0X"),
+                        16,
+                    )
+                    .ok()
+                })
+        };
 
         match self.filter_kind {
             FilterKind::Equal => parse_val().map(SearchFilter::Equal),
@@ -402,7 +429,11 @@ impl CheatSearchUi {
             FilterKind::DecreasedBy => parse_val().map(SearchFilter::DecreasedBy),
             FilterKind::BcdEqual => {
                 // Parse as decimal number (not hex)
-                self.filter_value.trim().parse::<u16>().ok().map(SearchFilter::BcdEqual)
+                self.filter_value
+                    .trim()
+                    .parse::<u16>()
+                    .ok()
+                    .map(SearchFilter::BcdEqual)
             }
         }
     }
