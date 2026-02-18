@@ -74,3 +74,7 @@ cargo run --example trace_boot -- roms/<game>.pce
 - CD-ROM subsystem and debugger UI are not implemented yet.
 
 See `TODO.md` for the detailed roadmap and current priorities.
+
+## License
+
+This project is for educational purposes.
