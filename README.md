@@ -49,6 +49,7 @@ Controls in `video_sdl`:
 - Save state: `Ctrl + 0..9`
 - Load state: `0..9`
 - Quit: `Esc`
+- Save/Load result: HUD toast (`SAVE n OK` / `LOAD n ERR` など)
 
 State files are persisted under `states/<rom_name>.slotN.state`.
 `video_sdl` 起動中のみ有効で、スロットは `0` から `9` です。

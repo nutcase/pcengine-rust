@@ -1,7 +1,10 @@
 mod egui_ui;
+#[path = "common/hud_toast.rs"]
+mod hud_toast;
 
 use egui_ui::CheatToolUi;
 use egui_ui::gl_game::GlGameRenderer;
+use hud_toast::{HudToast, draw_hud_toast, show_hud_toast};
 use pce::emulator::Emulator;
 use sdl2::audio::{AudioQueue, AudioSpecDesired};
 use sdl2::event::Event;
@@ -104,6 +107,7 @@ fn main() -> Result<(), String> {
     let mut frame_buf: Vec<u32> = Vec::new();
     let mut frame_buf_ready = false;
     let mut last_present = Instant::now();
+    let mut hud_toast: Option<HudToast> = None;
 
     let mut game_renderer = GlGameRenderer::new();
     let mut cheat_ui = CheatToolUi::new();
@@ -169,11 +173,21 @@ fn main() -> Result<(), String> {
                         let state_path = state_file_path(&rom_path, slot);
                         if ctrl_pressed {
                             if let Some(parent) = state_path.parent() {
-                                let _ = std::fs::create_dir_all(parent);
+                                if let Err(err) = std::fs::create_dir_all(parent) {
+                                    eprintln!("Save failed: {err}");
+                                    show_hud_toast(&mut hud_toast, "STATE DIR ERR");
+                                    continue;
+                                }
                             }
                             match emulator.save_state_to_file(&state_path) {
-                                Ok(()) => eprintln!("Saved slot {}", slot),
-                                Err(err) => eprintln!("Save failed: {err}"),
+                                Ok(()) => {
+                                    eprintln!("Saved slot {}", slot);
+                                    show_hud_toast(&mut hud_toast, format!("SAVE {slot} OK"));
+                                }
+                                Err(err) => {
+                                    eprintln!("Save failed: {err}");
+                                    show_hud_toast(&mut hud_toast, format!("SAVE {slot} ERR"));
+                                }
                             }
                         } else {
                             match emulator.load_state_from_file(&state_path) {
@@ -183,8 +197,12 @@ fn main() -> Result<(), String> {
                                     frame_buf_ready = false;
                                     last_present = Instant::now();
                                     eprintln!("Loaded slot {}", slot);
+                                    show_hud_toast(&mut hud_toast, format!("LOAD {slot} OK"));
                                 }
-                                Err(err) => eprintln!("Load failed: {err}"),
+                                Err(err) => {
+                                    eprintln!("Load failed: {err}");
+                                    show_hud_toast(&mut hud_toast, format!("LOAD {slot} ERR"));
+                                }
                             }
                         }
                     } else {
@@ -273,6 +291,12 @@ fn main() -> Result<(), String> {
 
         // Upload game frame to GL texture
         if frame_buf_ready {
+            draw_hud_toast(
+                &mut frame_buf,
+                current_width,
+                current_height,
+                &mut hud_toast,
+            );
             game_renderer.upload_frame(&frame_buf, current_width, current_height);
             frame_buf_ready = false;
         }

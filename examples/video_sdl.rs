@@ -1,3 +1,7 @@
+#[path = "common/hud_toast.rs"]
+mod hud_toast;
+
+use hud_toast::{HudToast, draw_hud_toast, show_hud_toast};
 use pce::emulator::Emulator;
 use sdl2::audio::{AudioQueue, AudioSpecDesired};
 use sdl2::event::Event;
@@ -88,6 +92,7 @@ fn main() -> Result<(), String> {
     let mut pressed: HashSet<Keycode> = HashSet::new();
     let mut latest_frame: Option<Vec<u32>> = None;
     let mut last_present = Instant::now();
+    let mut hud_toast: Option<HudToast> = None;
 
     while !quit {
         for event in event_pump.poll_iter() {
@@ -111,16 +116,23 @@ fn main() -> Result<(), String> {
                                         "Failed to create state directory {}: {err}",
                                         parent.display()
                                     );
+                                    show_hud_toast(&mut hud_toast, "STATE DIR ERR");
                                     continue;
                                 }
                             }
                             match emulator.save_state_to_file(&state_path) {
-                                Ok(()) => eprintln!(
-                                    "Saved state to slot {} ({})",
-                                    slot,
-                                    state_path.display()
-                                ),
-                                Err(err) => eprintln!("Failed to save slot {}: {err}", slot),
+                                Ok(()) => {
+                                    eprintln!(
+                                        "Saved state to slot {} ({})",
+                                        slot,
+                                        state_path.display()
+                                    );
+                                    show_hud_toast(&mut hud_toast, format!("SAVE {slot} OK"));
+                                }
+                                Err(err) => {
+                                    eprintln!("Failed to save slot {}: {err}", slot);
+                                    show_hud_toast(&mut hud_toast, format!("SAVE {slot} ERR"));
+                                }
                             }
                         } else {
                             match emulator.load_state_from_file(&state_path) {
@@ -134,6 +146,7 @@ fn main() -> Result<(), String> {
                                         slot,
                                         state_path.display()
                                     );
+                                    show_hud_toast(&mut hud_toast, format!("LOAD {slot} OK"));
                                 }
                                 Err(err) => {
                                     eprintln!(
@@ -141,6 +154,7 @@ fn main() -> Result<(), String> {
                                         slot,
                                         state_path.display()
                                     );
+                                    show_hud_toast(&mut hud_toast, format!("LOAD {slot} ERR"));
                                 }
                             }
                         }
@@ -206,16 +220,14 @@ fn main() -> Result<(), String> {
             queued >= AUDIO_QUEUE_CRITICAL || last_present.elapsed() >= MAX_PRESENT_INTERVAL;
         if should_present {
             if let Some(frame) = latest_frame.take() {
+                let mut frame = frame;
+                draw_hud_toast(&mut frame, current_width, current_height, &mut hud_toast);
                 update_texture(&mut texture, &frame, current_width)?;
                 canvas.clear();
                 // Stretch texture to fill the window at 4:3 aspect ratio.
                 // SDL handles non-integer scaling via the dest rect.
                 let (win_w, win_h) = canvas.output_size().map_err(|e| e.to_string())?;
-                canvas.copy(
-                    &texture,
-                    None,
-                    Some(Rect::new(0, 0, win_w, win_h)),
-                )?;
+                canvas.copy(&texture, None, Some(Rect::new(0, 0, win_w, win_h)))?;
                 canvas.present();
                 last_present = Instant::now();
             }
