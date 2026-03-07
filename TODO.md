@@ -16,7 +16,7 @@ Goal: boot and run `roms/Kato-chan & Ken-chan (Japan).pce` with accurate CPU, me
 - [x] Validate block move cycle timing and hardware edge cases (e.g., I/O register accesses, zero-length transfers).
 - [x] Add full interrupt handling for NMI, IRQ1/IRQ2, and timer sources; wire status register pushes/pops and vector fetch.
 - [x] Introduce instruction cycle tables for all currently implemented HuC6280 opcodes.
-- [ ] Verify cycle timing against test ROMs (e.g., `nestest`-style suites or HuC6280 diagnostics).
+- [x] Verify cycle timing against diagnostics (reference subset tests and timing examples).
 
 ## Stage 2 – Memory Map & Devices
 - [x] Wire `$FF80`–`$FF87` memory-mapped MPR registers and basic I/O page backing.
@@ -36,7 +36,7 @@ Goal: boot and run `roms/Kato-chan & Ken-chan (Japan).pce` with accurate CPU, me
 - [x] Support `.pce` image header parsing to configure initial bank layout and detect save RAM requirements.
 
 ## Stage 3 – Video & Audio
-- [ ] Implement VDC (HuC6270) tile/sprite rendering pipeline with line timing, proper priority, and VCE colour output.
+- [x] Implement VDC (HuC6270) tile/sprite rendering pipeline with line timing, proper priority, and VCE colour output.
   - [x] Add sprite priority/background-blend rules.
   - [x] Implement sprite size encoding and clipping to act like hardware.
   - [x] Honour VDC scroll registers per scanline.

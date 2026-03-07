@@ -104,6 +104,113 @@ fn undefined_opcodes_behave_as_nops() {
 }
 
 #[test]
+fn cycle_timing_reference_subset() {
+    {
+        let program = [0xA9, 0x01, 0x00]; // LDA #$01
+        let (mut cpu, mut bus) = setup_cpu_with_program(&program);
+        let cycles = cpu.step(&mut bus);
+        assert_eq!(cycles, 2, "LDA #imm should take 2 cycles");
+    }
+    {
+        let program = [0xA5, 0x10, 0x00]; // LDA $10
+        let (mut cpu, mut bus) = setup_cpu_with_program(&program);
+        bus.write(0x0010, 0x55);
+        let cycles = cpu.step(&mut bus);
+        assert_eq!(cycles, 4, "LDA zp should take 4 cycles");
+    }
+    {
+        let program = [0xAD, 0x34, 0x12, 0x00]; // LDA $1234
+        let (mut cpu, mut bus) = setup_cpu_with_program(&program);
+        bus.write(0x1234, 0x77);
+        let cycles = cpu.step(&mut bus);
+        assert_eq!(cycles, 5, "LDA abs should take 5 cycles");
+    }
+    {
+        let program = [0x24, 0x10, 0x00]; // BIT $10
+        let (mut cpu, mut bus) = setup_cpu_with_program(&program);
+        cpu.a = 0x0F;
+        bus.write(0x0010, 0xF0);
+        let cycles = cpu.step(&mut bus);
+        assert_eq!(cycles, 4, "BIT zp should take 4 cycles");
+    }
+    {
+        let program = [0x66, 0x10, 0x00]; // ROR $10
+        let (mut cpu, mut bus) = setup_cpu_with_program(&program);
+        bus.write(0x0010, 0x80);
+        let cycles = cpu.step(&mut bus);
+        assert_eq!(cycles, 6, "ROR zp should take 6 cycles");
+    }
+    {
+        let program = [0xD0, 0x02, 0x00]; // BNE +2
+        let (mut cpu, mut bus) = setup_cpu_with_program(&program);
+        cpu.set_flag(FLAG_ZERO, true);
+        let cycles = cpu.step(&mut bus);
+        assert_eq!(cycles, 2, "BNE not-taken should take 2 cycles");
+    }
+    {
+        let program = [0xD0, 0x02, 0x00, 0x00]; // BNE +2
+        let (mut cpu, mut bus) = setup_cpu_with_program(&program);
+        cpu.set_flag(FLAG_ZERO, false);
+        let cycles = cpu.step(&mut bus);
+        assert_eq!(cycles, 4, "BNE taken should take 4 cycles");
+    }
+    {
+        let program = [0x93, 0x0F, 0x34, 0x12, 0x00]; // TST #$0F, $1234
+        let (mut cpu, mut bus) = setup_cpu_with_program(&program);
+        bus.write(0x1234, 0xF0);
+        let cycles = cpu.step(&mut bus);
+        assert_eq!(cycles, 8, "TST abs should take 8 cycles");
+    }
+    {
+        let program = block_transfer_program(0x73, 0x9000, 0x4000, 0x0003); // TII len=3
+        let (mut cpu, mut bus) = setup_cpu_with_program(&program);
+        for i in 0..4u16 {
+            bus.write(0x9000 + i, 0x10 + i as u8);
+        }
+        let cycles = cpu.step(&mut bus);
+        assert_eq!(
+            cycles,
+            17 + 6 * 3u32,
+            "TII length=3 should report full transfer cycles"
+        );
+    }
+}
+
+#[test]
+fn opcode_base_cycles_reference_groups() {
+    // 2-cycle group
+    assert_eq!(Cpu::opcode_base_cycles(0xEA), 2); // NOP
+    assert_eq!(Cpu::opcode_base_cycles(0x80), 2); // BRA base
+
+    // 3-cycle group
+    assert_eq!(Cpu::opcode_base_cycles(0x48), 3); // PHA
+    assert_eq!(Cpu::opcode_base_cycles(0xDA), 3); // PHX
+
+    // 4-cycle group
+    assert_eq!(Cpu::opcode_base_cycles(0xA5), 4); // LDA zp
+    assert_eq!(Cpu::opcode_base_cycles(0x4C), 4); // JMP abs
+
+    // 5-cycle group
+    assert_eq!(Cpu::opcode_base_cycles(0xAD), 5); // LDA abs
+    assert_eq!(Cpu::opcode_base_cycles(0x9D), 5); // STA abs,X
+
+    // 6-cycle group
+    assert_eq!(Cpu::opcode_base_cycles(0x66), 6); // ROR zp
+    assert_eq!(Cpu::opcode_base_cycles(0x0F), 6); // BBR0 zp,rel (not-taken base)
+
+    // 7-cycle group
+    assert_eq!(Cpu::opcode_base_cycles(0x6C), 7); // JMP (abs)
+    assert_eq!(Cpu::opcode_base_cycles(0x7C), 7); // JMP (abs,X)
+    assert_eq!(Cpu::opcode_base_cycles(0x20), 7); // JSR abs
+    assert_eq!(Cpu::opcode_base_cycles(0x60), 7); // RTS
+    assert_eq!(Cpu::opcode_base_cycles(0x40), 7); // RTI
+
+    // 8-cycle group
+    assert_eq!(Cpu::opcode_base_cycles(0x00), 8); // BRK
+    assert_eq!(Cpu::opcode_base_cycles(0x83), 8); // TST zp
+}
+
+#[test]
 fn adc_handles_carry_and_overflow() {
     let program = [0x69, 0x01, 0x69, 0x80, 0x00];
     let (mut cpu, mut bus) = setup_cpu_with_program(&program);
