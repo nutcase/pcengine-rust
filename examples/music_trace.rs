@@ -1,4 +1,11 @@
-#![allow(unused_imports, unused_variables, unused_mut, dead_code, unused_assignments, unused_comparisons)]
+#![allow(
+    unused_imports,
+    unused_variables,
+    unused_mut,
+    dead_code,
+    unused_assignments,
+    unused_comparisons
+)]
 /// Trace music engine: count PSG writes per second and dump music state.
 use pce::emulator::Emulator;
 use std::error::Error;

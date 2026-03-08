@@ -163,6 +163,10 @@ impl Emulator {
         self.audio_batch_size = samples.max(1);
     }
 
+    pub fn set_video_output_enabled(&mut self, enabled: bool) {
+        self.bus.set_video_output_enabled(enabled);
+    }
+
     pub fn save_state_to_file<P: AsRef<std::path::Path>>(
         &self,
         path: P,
@@ -207,6 +211,14 @@ impl Emulator {
         }
         let tail = self.audio_buffer.split_off(self.audio_batch_size);
         Some(std::mem::replace(&mut self.audio_buffer, tail))
+    }
+
+    pub fn drain_audio_samples(&mut self) -> Vec<i16> {
+        std::mem::take(&mut self.audio_buffer)
+    }
+
+    pub fn pending_audio_samples(&self) -> usize {
+        self.audio_buffer.len()
     }
 
     /// Copy the current frame into `buf`, reusing its allocation.

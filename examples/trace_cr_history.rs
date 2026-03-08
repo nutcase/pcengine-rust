@@ -1,4 +1,11 @@
-#![allow(unused_imports, unused_variables, unused_mut, dead_code, unused_assignments, unused_comparisons)]
+#![allow(
+    unused_imports,
+    unused_variables,
+    unused_mut,
+    dead_code,
+    unused_assignments,
+    unused_comparisons
+)]
 /// Trace all CR (Control Register) value changes from boot.
 /// Find when the high byte first becomes 0x10 (increment=64).
 use pce::emulator::Emulator;

@@ -1,4 +1,11 @@
-#![allow(unused_imports, unused_variables, unused_mut, dead_code, unused_assignments, unused_comparisons)]
+#![allow(
+    unused_imports,
+    unused_variables,
+    unused_mut,
+    dead_code,
+    unused_assignments,
+    unused_comparisons
+)]
 /// Debug rendering gaps: run a ROM, dump frames showing per-scanline state
 use pce::emulator::Emulator;
 use std::{error::Error, fs::File, io::Write};

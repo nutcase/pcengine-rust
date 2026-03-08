@@ -1,4 +1,11 @@
-#![allow(unused_imports, unused_variables, unused_mut, dead_code, unused_assignments, unused_comparisons)]
+#![allow(
+    unused_imports,
+    unused_variables,
+    unused_mut,
+    dead_code,
+    unused_assignments,
+    unused_comparisons
+)]
 /// Load a save state and walk right to find rendering corruption.
 use pce::emulator::Emulator;
 use std::error::Error;

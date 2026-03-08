@@ -1,4 +1,11 @@
-#![allow(unused_imports, unused_variables, unused_mut, dead_code, unused_assignments, unused_comparisons)]
+#![allow(
+    unused_imports,
+    unused_variables,
+    unused_mut,
+    dead_code,
+    unused_assignments,
+    unused_comparisons
+)]
 /// Find the first frame where VRAM[0x1400] gets corrupted (changes from non-zero to zero).
 use pce::emulator::Emulator;
 use std::error::Error;

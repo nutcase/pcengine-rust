@@ -26,12 +26,10 @@ pub(crate) const PSG_CH_CTRL_KEY_ON: u8 = 0x80;
 pub(crate) const PSG_NOISE_ENABLE: u8 = 0x80;
 pub(super) const PSG_NOISE_FREQ_MASK: u8 = 0x1F;
 pub(super) const PSG_PHASE_FRAC_BITS: u32 = 12;
-pub(super) const PSG_PHASE_FRAC_MASK: u32 = (1 << PSG_PHASE_FRAC_BITS) - 1;
 pub(super) const PSG_PERIOD_ENTRIES: usize = 0x1000;
-// Output gain: Mednafen uses base * 8/6 ≈ 1.33x per channel.
-// With 6 channels at max (15 * 65536 each), max mix = 5,898,240.
-// Gain 340: (5,898,240 * 340) >> 16 = 30,600 (within i16 range).
-pub(super) const PSG_OUTPUT_GAIN: i32 = 340;
+// Keep headroom for 6 channels with signed 5-bit samples (-31..31) after
+// attenuation.  170 keeps the theoretical full-scale mix below i16 clipping.
+pub(super) const PSG_OUTPUT_GAIN: i32 = 170;
 
 /// Logarithmic volume table (Mednafen-compatible).
 /// Index = attenuation level (0 = full volume, 31 = silence).
@@ -60,16 +58,10 @@ pub(super) fn psg_db_table() -> &'static [i32; 32] {
 pub(super) fn psg_balance_scale_tab() -> &'static [u8; 16] {
     static TABLE: std::sync::OnceLock<[u8; 16]> = std::sync::OnceLock::new();
     TABLE.get_or_init(|| {
-        let mut table = [0u8; 16];
-        for n in 0..16u8 {
-            if n == 0 {
-                table[n as usize] = 0;
-            } else {
-                // Scale 1-15 to 3-31 (matching Mednafen: n*2 + 1 for non-zero)
-                table[n as usize] = (n * 2 + 1).min(31);
-            }
-        }
-        table
+        [
+            0x00, 0x03, 0x05, 0x07, 0x09, 0x0B, 0x0D, 0x0F, 0x10, 0x13, 0x15, 0x17, 0x19, 0x1B,
+            0x1D, 0x1F,
+        ]
     })
 }
 

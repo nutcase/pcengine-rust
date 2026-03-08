@@ -1,4 +1,11 @@
-#![allow(unused_imports, unused_variables, unused_mut, dead_code, unused_assignments, unused_comparisons)]
+#![allow(
+    unused_imports,
+    unused_variables,
+    unused_mut,
+    dead_code,
+    unused_assignments,
+    unused_comparisons
+)]
 /// Diagnostic tool: load Jaseiken Necromancer slot4 save state,
 /// run a few frames, dump per-scanline scroll/control and the rendered frame.
 use pce::emulator::Emulator;

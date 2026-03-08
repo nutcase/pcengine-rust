@@ -1,4 +1,11 @@
-#![allow(unused_imports, unused_variables, unused_mut, dead_code, unused_assignments, unused_comparisons)]
+#![allow(
+    unused_imports,
+    unused_variables,
+    unused_mut,
+    dead_code,
+    unused_assignments,
+    unused_comparisons
+)]
 /// VBlank timing diagnostic: measures CPU cycles per frame,
 /// IRQ delivery rates, and music activity.
 use pce::emulator::Emulator;

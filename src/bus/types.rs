@@ -46,10 +46,8 @@ impl core::ops::DerefMut for TransientBool {
 
 /// A `u64` wrapper excluded from save-state serialization.
 #[derive(Clone, Copy, Default)]
-#[cfg(debug_assertions)]
 pub(super) struct TransientU64(pub(super) u64);
 
-#[cfg(debug_assertions)]
 impl bincode::Encode for TransientU64 {
     fn encode<E: bincode::enc::Encoder>(
         &self,
@@ -59,7 +57,6 @@ impl bincode::Encode for TransientU64 {
     }
 }
 
-#[cfg(debug_assertions)]
 impl<Context> bincode::Decode<Context> for TransientU64 {
     fn decode<D: bincode::de::Decoder>(
         _decoder: &mut D,
@@ -68,7 +65,6 @@ impl<Context> bincode::Decode<Context> for TransientU64 {
     }
 }
 
-#[cfg(debug_assertions)]
 impl<'de, Context> bincode::BorrowDecode<'de, Context> for TransientU64 {
     fn borrow_decode<D: bincode::de::BorrowDecoder<'de>>(
         _decoder: &mut D,
@@ -77,7 +73,6 @@ impl<'de, Context> bincode::BorrowDecode<'de, Context> for TransientU64 {
     }
 }
 
-#[cfg(debug_assertions)]
 impl core::ops::Deref for TransientU64 {
     type Target = u64;
     fn deref(&self) -> &u64 {
@@ -85,7 +80,6 @@ impl core::ops::Deref for TransientU64 {
     }
 }
 
-#[cfg(debug_assertions)]
 impl core::ops::DerefMut for TransientU64 {
     fn deref_mut(&mut self) -> &mut u64 {
         &mut self.0

@@ -1,4 +1,11 @@
-#![allow(unused_imports, unused_variables, unused_mut, dead_code, unused_assignments, unused_comparisons)]
+#![allow(
+    unused_imports,
+    unused_variables,
+    unused_mut,
+    dead_code,
+    unused_assignments,
+    unused_comparisons
+)]
 /// Measure how many tick() iterations per frame and WAI vs active cycles.
 /// If WAI dominates, the emulator might be too slow for real-time playback.
 use pce::emulator::Emulator;

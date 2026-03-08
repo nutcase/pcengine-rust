@@ -120,7 +120,6 @@ cargo run --example trace_boot -- roms/<game>.pce
 - Some VDC edge cases (exact per-line behaviour and game-specific quirks) are still being refined.
 - CD-ROM subsystem is not implemented yet.
 
-See `TODO.md` for the detailed roadmap and current priorities.
 
 ## License
 

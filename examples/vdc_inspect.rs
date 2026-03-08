@@ -1,4 +1,11 @@
-#![allow(unused_imports, unused_variables, unused_mut, dead_code, unused_assignments, unused_comparisons)]
+#![allow(
+    unused_imports,
+    unused_variables,
+    unused_mut,
+    dead_code,
+    unused_assignments,
+    unused_comparisons
+)]
 use pce::bus::{
     VDC_STATUS_BUSY, VDC_STATUS_CR, VDC_STATUS_DS, VDC_STATUS_DV, VDC_STATUS_OR, VDC_STATUS_RCR,
     VDC_STATUS_VBL,

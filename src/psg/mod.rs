@@ -7,6 +7,47 @@ pub(crate) use tables::*;
 
 use tables::{PSG_STATUS_IRQ, phase_step_for_period};
 
+#[derive(Clone, Copy, Default)]
+struct TransientF64(f64);
+
+impl bincode::Encode for TransientF64 {
+    fn encode<E: bincode::enc::Encoder>(
+        &self,
+        _encoder: &mut E,
+    ) -> Result<(), bincode::error::EncodeError> {
+        Ok(())
+    }
+}
+
+impl<Context> bincode::Decode<Context> for TransientF64 {
+    fn decode<D: bincode::de::Decoder>(
+        _decoder: &mut D,
+    ) -> Result<Self, bincode::error::DecodeError> {
+        Ok(Self(0.0))
+    }
+}
+
+impl<'de, Context> bincode::BorrowDecode<'de, Context> for TransientF64 {
+    fn borrow_decode<D: bincode::de::BorrowDecoder<'de>>(
+        _decoder: &mut D,
+    ) -> Result<Self, bincode::error::DecodeError> {
+        Ok(Self(0.0))
+    }
+}
+
+impl core::ops::Deref for TransientF64 {
+    type Target = f64;
+    fn deref(&self) -> &f64 {
+        &self.0
+    }
+}
+
+impl core::ops::DerefMut for TransientF64 {
+    fn deref_mut(&mut self) -> &mut f64 {
+        &mut self.0
+    }
+}
+
 #[derive(Clone, bincode::Encode, bincode::Decode)]
 pub(crate) struct Psg {
     regs: [u8; PSG_REG_COUNT],
@@ -19,8 +60,8 @@ pub(crate) struct Psg {
     irq_pending: bool,
     pub(crate) channels: [PsgChannel; PSG_CHANNEL_COUNT],
     pub(crate) waveform_ram: [u8; PSG_CHANNEL_COUNT * PSG_WAVE_SIZE],
-    /// First-order IIR low-pass filter state for anti-aliasing.
-    lpf_state: f64,
+    post_filter_state: f64,
+    dc_prev_input: TransientF64,
 }
 
 impl Psg {
@@ -36,7 +77,8 @@ impl Psg {
             irq_pending: false,
             channels: [PsgChannel::default(); PSG_CHANNEL_COUNT],
             waveform_ram: [0; PSG_CHANNEL_COUNT * PSG_WAVE_SIZE],
-            lpf_state: 0.0,
+            post_filter_state: 0.0,
+            dc_prev_input: TransientF64(0.0),
         }
     }
 
@@ -170,6 +212,11 @@ impl Psg {
                 self.lfo_frequency = value;
             }
             PSG_REG_LFO_CTRL => {
+                if value & 0x80 != 0 {
+                    let channel = &mut self.channels[1];
+                    channel.wave_pos = 0;
+                    channel.phase = 0;
+                }
                 self.lfo_control = value;
             }
             PSG_REG_TIMER_LO | PSG_REG_TIMER_HI => {

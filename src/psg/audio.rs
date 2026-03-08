@@ -4,28 +4,33 @@ use super::tables::*;
 
 impl Psg {
     pub(crate) fn generate_sample(&mut self) -> i16 {
-        self.advance_waveforms();
         let mut mix: i32 = 0;
         for channel_index in 0..PSG_CHANNEL_COUNT {
             let state = self.channels[channel_index];
             mix += self.sample_channel(channel_index, state);
         }
         // sample_channel() returns values with 16 fractional bits.
-        // Per-channel max = 15 * 65536 = 983,040; 6-channel max = 5,898,240.
+        // Per-channel max = 31 * 65536 = 2,031,616; 6-channel max = 12,189,696.
         // Apply gain and shift: (mix * gain) >> 16.
-        // With PSG_OUTPUT_GAIN=256: max = (5,898,240 * 256) >> 16 = 23,040.
         let scaled = ((mix as i64 * PSG_OUTPUT_GAIN as i64) >> 16) as i32;
-        let clamped = scaled.clamp(i16::MIN as i32, i16::MAX as i32) as f64;
-        // First-order IIR low-pass filter (~14 kHz cutoff at 44.1 kHz).
-        // alpha ≈ 2*pi*fc / (2*pi*fc + fs) ≈ 0.67 for fc=14000, fs=44100
-        const LPF_ALPHA: f64 = 0.67;
-        self.lpf_state = self.lpf_state + LPF_ALPHA * (clamped - self.lpf_state);
-        self.lpf_state as i16
+        let input = scaled.clamp(i16::MIN as i32, i16::MAX as i32) as f64;
+        // PSG samples are unsigned around the midpoint, so remove the resulting DC bias
+        // before converting back to i16.  Keeping this transient preserves old save states.
+        const DC_BLOCK_R: f64 = 0.995;
+        let output = input - *self.dc_prev_input + DC_BLOCK_R * self.post_filter_state;
+        self.dc_prev_input.0 = input;
+        self.post_filter_state = output;
+        output.clamp(i16::MIN as f64, i16::MAX as f64) as i16
     }
 
-    fn advance_waveforms(&mut self) {
-        let lfo_mod = self.lfo_modulation();
-        let lfo_enabled = self.lfo_enabled();
+    pub(crate) fn clock(&mut self, psg_cycles: u32) {
+        if psg_cycles == 0 {
+            return;
+        }
+
+        let lfo_active = self.lfo_active();
+        let lfo_halted = self.lfo_halted();
+        let lfo_mod = self.lfo_modulation(lfo_active);
         for idx in 0..PSG_CHANNEL_COUNT {
             let ch = &mut self.channels[idx];
             if ch.control & PSG_CH_CTRL_KEY_ON == 0 {
@@ -34,21 +39,14 @@ impl Psg {
             if ch.control & PSG_CH_CTRL_DDA != 0 {
                 continue;
             }
+            if idx == 1 && lfo_halted {
+                continue;
+            }
             if idx >= 4 && ch.noise_control & PSG_NOISE_ENABLE != 0 {
-                // HuC6280 noise generator (Mednafen reference):
-                // - 18-bit LFSR with taps at bits 0, 1, 11, 12, 17
-                // - Noise period: NF = noisectrl & 0x1F
-                //   raw = 31 - NF; if raw==0 then period=64, else period = raw * 128
-                // - LFSR steps once per `period` PSG clock cycles
-                // Use 16-bit fixed-point accumulator for precision.
-                let nf = (ch.noise_control & PSG_NOISE_FREQ_MASK) as u32;
-                let raw = 31u32.saturating_sub(nf);
-                let period = if raw == 0 { 64u64 } else { raw as u64 * 128 };
-                let noise_step =
-                    ((PSG_CLOCK_HZ as u64) << 16) / (period * AUDIO_SAMPLE_RATE as u64);
-                ch.noise_phase = ch.noise_phase.wrapping_add(noise_step.max(1) as u32);
-                let steps = (ch.noise_phase >> 16) as usize;
-                ch.noise_phase &= 0xFFFF;
+                let period = noise_period(ch.noise_control);
+                ch.noise_phase = ch.noise_phase.wrapping_add(psg_cycles);
+                let steps = (ch.noise_phase / period) as usize;
+                ch.noise_phase %= period;
                 for _ in 0..steps {
                     let lfsr = ch.noise_lfsr;
                     let feedback =
@@ -62,17 +60,21 @@ impl Psg {
                 continue;
             }
 
-            let step_fp = if idx == 0 && lfo_enabled {
-                let effective_period = (ch.frequency as i32 + lfo_mod).clamp(0, 0x0FFF) as u16;
-                phase_step_for_period(effective_period)
+            let period = if idx == 0 && lfo_active {
+                let effective_period = ((ch.frequency as i32 + lfo_mod).rem_euclid(0x1000)) as u16;
+                tone_divider(effective_period)
+            } else if idx == 1 && lfo_active {
+                tone_divider(ch.frequency) * lfo_frequency_scale(self.lfo_frequency)
             } else {
-                ch.phase_step.max(1)
+                tone_divider(ch.frequency)
             };
-            let phase = ch.phase.wrapping_add(step_fp);
-            let step = (phase >> PSG_PHASE_FRAC_BITS) as u8;
-            ch.phase = phase & PSG_PHASE_FRAC_MASK;
-            if step != 0 {
-                ch.wave_pos = ch.wave_pos.wrapping_add(step) & (PSG_WAVE_SIZE as u8 - 1);
+
+            ch.phase = ch.phase.wrapping_add(psg_cycles);
+            let steps = (ch.phase / period) as usize;
+            ch.phase %= period;
+            if steps != 0 {
+                let advance = (steps & (PSG_WAVE_SIZE - 1)) as u8;
+                ch.wave_pos = ch.wave_pos.wrapping_add(advance) & (PSG_WAVE_SIZE as u8 - 1);
             }
         }
     }
@@ -82,18 +84,18 @@ impl Psg {
             return 0;
         }
         let raw = if state.control & PSG_CH_CTRL_DDA != 0 {
-            state.dda_sample as i32 - 0x10
+            sample_to_signed(state.dda_sample)
         } else if channel >= 4 && state.noise_control & PSG_NOISE_ENABLE != 0 {
-            if state.noise_lfsr & 0x01 == 0 {
-                0x0F
+            if state.noise_lfsr & 0x01 != 0 {
+                sample_to_signed(0x1F)
             } else {
-                -0x10
+                sample_to_signed(0x00)
             }
         } else {
             let base = channel * PSG_WAVE_SIZE;
             let offset = (state.wave_pos as usize) & (PSG_WAVE_SIZE - 1);
             let wave_index = base + offset;
-            self.waveform_ram[wave_index] as i32 - 0x10
+            sample_to_signed(self.waveform_ram[wave_index])
         };
         if raw == 0 {
             return 0;
@@ -128,20 +130,64 @@ impl Psg {
         ((left + right) / 2) as i32
     }
 
-    fn lfo_enabled(&self) -> bool {
+    fn lfo_depth(&self) -> u8 {
+        self.lfo_control & 0x03
+    }
+
+    fn lfo_halted(&self) -> bool {
         self.lfo_control & 0x80 != 0
     }
 
-    fn lfo_modulation(&self) -> i32 {
-        if !self.lfo_enabled() {
+    fn lfo_active(&self) -> bool {
+        self.lfo_depth() != 0
+            && !self.lfo_halted()
+            && self.channels[1].control & PSG_CH_CTRL_KEY_ON != 0
+    }
+
+    fn lfo_modulation(&self, lfo_active: bool) -> i32 {
+        if !lfo_active {
             return 0;
         }
-        let depth_shift = (self.lfo_control & 0x03) as i32;
-        let speed_bias = (self.lfo_frequency & 0x0F) as i32;
-        let ch1 = self.channels[1];
-        let base = PSG_WAVE_SIZE;
-        let offset = (ch1.wave_pos as usize) & (PSG_WAVE_SIZE - 1);
-        let raw = self.waveform_ram[base + offset] as i32 - 0x10;
-        (raw << depth_shift) + speed_bias
+        let depth_shift = ((self.lfo_depth() - 1) << 1) as i32;
+        let raw = self.current_lfo_sample();
+        raw << depth_shift
     }
+
+    fn current_lfo_sample(&self) -> i32 {
+        let state = self.channels[1];
+        if state.control & PSG_CH_CTRL_DDA != 0 {
+            (state.dda_sample & 0x1F) as i32 - 0x10
+        } else {
+            let base = PSG_WAVE_SIZE;
+            let offset = (state.wave_pos as usize) & (PSG_WAVE_SIZE - 1);
+            self.waveform_ram[base + offset] as i32 - 0x10
+        }
+    }
+}
+
+#[inline]
+fn tone_divider(period: u16) -> u32 {
+    let period = (period & 0x0FFF) as u32;
+    if period == 0 {
+        0x1000 << 1
+    } else {
+        period << 1
+    }
+}
+
+#[inline]
+fn noise_period(noise_control: u8) -> u32 {
+    let nf = (noise_control & PSG_NOISE_FREQ_MASK) as u32;
+    let raw = 31u32.saturating_sub(nf);
+    if raw == 0 { 64 } else { raw * 128 }
+}
+
+#[inline]
+fn lfo_frequency_scale(value: u8) -> u32 {
+    if value == 0 { 256 } else { value as u32 }
+}
+
+#[inline]
+fn sample_to_signed(sample: u8) -> i32 {
+    ((sample & 0x1F) as i32 * 2) - 0x1F
 }

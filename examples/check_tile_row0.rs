@@ -1,4 +1,11 @@
-#![allow(unused_imports, unused_variables, unused_mut, dead_code, unused_assignments, unused_comparisons)]
+#![allow(
+    unused_imports,
+    unused_variables,
+    unused_mut,
+    dead_code,
+    unused_assignments,
+    unused_comparisons
+)]
 /// Check multiple tiles for transparent row 0 pattern.
 /// If many tiles have transparent row 0 but solid other rows, it indicates
 /// a systematic bug in VRAM write/DMA handling.

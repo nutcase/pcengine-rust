@@ -1,4 +1,11 @@
-#![allow(unused_imports, unused_variables, unused_mut, dead_code, unused_assignments, unused_comparisons)]
+#![allow(
+    unused_imports,
+    unused_variables,
+    unused_mut,
+    dead_code,
+    unused_assignments,
+    unused_comparisons
+)]
 #[path = "common/config.rs"]
 mod config;
 mod egui_ui;
@@ -10,6 +17,7 @@ use egui_ui::debugger::{CpuSnapshot, DebuggerAction, VdcSnapshot, describe_break
 use egui_ui::gl_game::GlGameRenderer;
 use egui_ui::{CheatToolUi, DebuggerPanelData};
 use hud_toast::{HudToast, draw_hud_toast, show_hud_toast};
+use pce::bus::AudioDiagnostics;
 use pce::debugger::{DebugTick, Debugger};
 use pce::emulator::Emulator;
 use sdl2::audio::{AudioQueue, AudioSpecDesired};
@@ -25,7 +33,122 @@ use egui_sdl2_gl::gl;
 
 const PANEL_WIDTH_MIN: f32 = 300.0;
 
+#[derive(Clone, Copy, Default)]
+struct QueueWriteStats {
+    queued: usize,
+    dropped: usize,
+}
+
+struct AudioQueueDiag {
+    enabled: bool,
+    start: Instant,
+    last_report: Instant,
+    last_bus_diag: AudioDiagnostics,
+    queued_samples_interval: u64,
+    dropped_samples_interval: u64,
+    queue_low_hits: u64,
+    queue_zero_hits: u64,
+    queue_min: usize,
+    queue_max: usize,
+}
+
+impl AudioQueueDiag {
+    fn new(enabled: bool) -> Self {
+        Self {
+            enabled,
+            start: Instant::now(),
+            last_report: Instant::now(),
+            last_bus_diag: AudioDiagnostics::default(),
+            queued_samples_interval: 0,
+            dropped_samples_interval: 0,
+            queue_low_hits: 0,
+            queue_zero_hits: 0,
+            queue_min: usize::MAX,
+            queue_max: 0,
+        }
+    }
+
+    fn record_queue_level(&mut self, queued: usize, low_threshold: usize) {
+        if !self.enabled {
+            return;
+        }
+        self.queue_min = self.queue_min.min(queued);
+        self.queue_max = self.queue_max.max(queued);
+        if queued < low_threshold {
+            self.queue_low_hits = self.queue_low_hits.saturating_add(1);
+        }
+        if queued == 0 {
+            self.queue_zero_hits = self.queue_zero_hits.saturating_add(1);
+        }
+    }
+
+    fn record_write(&mut self, stats: QueueWriteStats) {
+        if !self.enabled {
+            return;
+        }
+        self.queued_samples_interval = self
+            .queued_samples_interval
+            .saturating_add(stats.queued as u64);
+        self.dropped_samples_interval = self
+            .dropped_samples_interval
+            .saturating_add(stats.dropped as u64);
+    }
+
+    fn maybe_report(&mut self, emulator: &Emulator, queued: usize) {
+        if !self.enabled {
+            return;
+        }
+
+        let now = Instant::now();
+        let elapsed = now.duration_since(self.last_report);
+        if elapsed < Duration::from_secs(1) {
+            return;
+        }
+
+        let dt = elapsed.as_secs_f64().max(f64::EPSILON);
+        let current_bus = emulator.bus.audio_diagnostics();
+        let delta_generated = current_bus
+            .generated_samples
+            .saturating_sub(self.last_bus_diag.generated_samples);
+        let delta_drained = current_bus
+            .drained_samples
+            .saturating_sub(self.last_bus_diag.drained_samples);
+
+        eprintln!(
+            "[pc_engine {:.1}s] q={} min={} max={} bus_gen={:.1}/s bus_drain={:.1}/s queued={:.1}/s dropped={:.1}/s low_hits={} zero_hits={} bus_pending={} emu_pending={} phi_rem={}",
+            now.duration_since(self.start).as_secs_f64(),
+            queued,
+            if self.queue_min == usize::MAX {
+                queued
+            } else {
+                self.queue_min
+            },
+            self.queue_max,
+            delta_generated as f64 / dt,
+            delta_drained as f64 / dt,
+            self.queued_samples_interval as f64 / dt,
+            self.dropped_samples_interval as f64 / dt,
+            self.queue_low_hits,
+            self.queue_zero_hits,
+            current_bus.pending_bus_samples,
+            emulator.pending_audio_samples(),
+            current_bus.phi_remainder,
+        );
+
+        self.last_report = now;
+        self.last_bus_diag = current_bus;
+        self.queued_samples_interval = 0;
+        self.dropped_samples_interval = 0;
+        self.queue_low_hits = 0;
+        self.queue_zero_hits = 0;
+        self.queue_min = usize::MAX;
+        self.queue_max = queued;
+    }
+}
+
 fn main() -> Result<(), String> {
+    const AUDIO_SAMPLES_PER_FRAME: usize = 44_100 / 60;
+
     let raw_args: Vec<String> = std::env::args().skip(1).collect();
     let (config_path, args) = config::parse_config_path(&raw_args);
     let mut args = args.into_iter();
@@ -143,6 +266,10 @@ fn main() -> Result<(), String> {
         .open_queue::<i16, _>(None, &desired_audio)
         .map_err(|e| e.to_string())?;
     audio_device.resume();
+    let mut audio_diag = AudioQueueDiag::new(std::env::var_os("PCE_AUDIO_DIAG").is_some());
+    if audio_diag.enabled {
+        eprintln!("PCE_AUDIO_DIAG enabled for pc_engine");
+    }
 
     let mut event_pump = sdl.event_pump().map_err(|e| e.to_string())?;
     let mut quit = false;
@@ -150,6 +277,8 @@ fn main() -> Result<(), String> {
     let mut frame_buf: Vec<u32> = Vec::new();
     let mut frame_buf_ready = false;
     let mut last_present = Instant::now();
+    let mut last_loop_tick = Instant::now();
+    let mut emu_frame_budget = Duration::ZERO;
     let mut hud_toast: Option<HudToast> = None;
     let auto_fire_epoch = Instant::now();
     let bound_keys = bindings.to_set();
@@ -161,6 +290,7 @@ fn main() -> Result<(), String> {
     let mut panel_width_px: u32 = config.panel_width.max(PANEL_WIDTH_MIN as u32);
     let text_input = video.text_input();
     let mut text_input_active = false;
+    let mut audio_prefill = true;
     text_input.stop();
 
     let cheat_path = cheat_file_path(&rom_path);
@@ -242,6 +372,9 @@ fn main() -> Result<(), String> {
                                     audio_device.clear();
                                     frame_buf_ready = false;
                                     last_present = Instant::now();
+                                    last_loop_tick = Instant::now();
+                                    emu_frame_budget = Duration::ZERO;
+                                    audio_prefill = true;
                                     eprintln!("Loaded slot {}", slot);
                                     show_hud_toast(&mut hud_toast, format!("LOAD {slot} OK"));
                                 }
@@ -291,14 +424,34 @@ fn main() -> Result<(), String> {
         let pad_state = build_pad_state(&pressed, &bindings, button_i_pressed, button_ii_pressed);
         emulator.bus.set_joypad_input(pad_state);
 
+        let now = Instant::now();
+        emu_frame_budget = (emu_frame_budget + now.saturating_duration_since(last_loop_tick))
+            .min(Duration::from_millis(100));
+        last_loop_tick = now;
+
         let mut steps = 0usize;
         let mut frame_seen = false;
         let allow_step = debugger.step_pending();
         let paused = cheat_ui.paused || (debugger.paused && !allow_step);
         if !paused {
-            while queued_samples(&audio_device) < perf.audio_queue_target
-                && steps < perf.max_emu_steps_per_pump
-            {
+            let mut queued_now = queued_samples(&audio_device);
+            let frame_interval = Duration::from_micros(16_667);
+            let mut frames_due =
+                (emu_frame_budget.as_micros() / frame_interval.as_micros()) as usize;
+            if queued_now <= perf.audio_queue_critical {
+                audio_prefill = true;
+            }
+            if audio_prefill {
+                let target_frames = perf.audio_queue_target.div_ceil(AUDIO_SAMPLES_PER_FRAME);
+                let queued_frames = queued_now / AUDIO_SAMPLES_PER_FRAME;
+                frames_due = frames_due.max(target_frames.saturating_sub(queued_frames));
+            } else if queued_now < perf.audio_queue_min {
+                frames_due = frames_due.max(1);
+            }
+            frames_due = frames_due.min(4);
+
+            let mut completed_frames = 0usize;
+            while completed_frames < frames_due && steps < perf.max_emu_steps_per_pump {
                 match emulator.tick_debugger(&mut debugger) {
                     DebugTick::Ran(_) => {}
                     DebugTick::Paused => break,
@@ -310,13 +463,21 @@ fn main() -> Result<(), String> {
                 }
                 steps += 1;
                 if let Some(samples) = emulator.take_audio_samples() {
-                    queue_audio_samples(&audio_device, &samples, perf.audio_queue_max)?;
+                    let write_stats =
+                        queue_audio_samples(&audio_device, &samples, perf.audio_queue_max)?;
+                    audio_diag.record_write(write_stats);
+                    queued_now = queued_samples(&audio_device);
                 }
                 if emulator.take_frame_into(&mut frame_buf) {
                     frame_buf_ready = true;
                     frame_seen = true;
+                    completed_frames = completed_frames.saturating_add(1);
+                    emu_frame_budget = emu_frame_budget.saturating_sub(frame_interval);
+                    if queued_now >= perf.audio_queue_target {
+                        audio_prefill = false;
+                    }
                 }
-                if frame_seen && steps >= perf.max_steps_after_frame {
+                if frame_seen && steps >= perf.max_steps_after_frame && completed_frames > 0 {
                     break;
                 }
             }
@@ -363,8 +524,15 @@ fn main() -> Result<(), String> {
         }
 
         let queued = queued_samples(&audio_device);
-        let should_present = queued >= perf.audio_queue_critical
-            || last_present.elapsed() >= Duration::from_millis(perf.max_present_interval_ms);
+        audio_diag.record_queue_level(queued, perf.audio_queue_critical);
+        audio_diag.maybe_report(&emulator, queued);
+        let present_interval_ms = if queued < perf.audio_queue_min {
+            perf.max_present_interval_ms.saturating_mul(3)
+        } else {
+            perf.max_present_interval_ms
+        };
+        let should_present =
+            frame_seen || last_present.elapsed() >= Duration::from_millis(present_interval_ms);
 
         if should_present {
             let (win_w, win_h) = window.size();
@@ -531,17 +699,28 @@ fn queue_audio_samples(
     device: &AudioQueue<i16>,
     samples: &[i16],
     audio_queue_max: usize,
-) -> Result<(), String> {
+) -> Result<QueueWriteStats, String> {
     let available = audio_queue_max.saturating_sub(queued_samples(device));
     if available == 0 {
-        return Ok(());
+        return Ok(QueueWriteStats {
+            queued: 0,
+            dropped: samples.len(),
+        });
     }
     if samples.len() > available {
         device
             .queue_audio(&samples[..available])
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        Ok(QueueWriteStats {
+            queued: available,
+            dropped: samples.len() - available,
+        })
     } else {
-        device.queue_audio(samples).map_err(|e| e.to_string())
+        device.queue_audio(samples).map_err(|e| e.to_string())?;
+        Ok(QueueWriteStats {
+            queued: samples.len(),
+            dropped: 0,
+        })
     }
 }
 

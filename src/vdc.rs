@@ -588,6 +588,27 @@ impl Vdc {
             // already-latched scroll for this scanline.
             self.latch_line_state(self.scanline as usize);
 
+            // Trigger frame render at the LAST active scanline (one before
+            // VBlank).  Games like Power League III write sprite pattern data
+            // to VRAM during active display; rendering at VBlank start would
+            // miss those writes.  By deferring the trigger to the end of
+            // active display, the batch renderer captures all mid-frame VRAM
+            // updates while per-line scroll/control state is still intact.
+            let vbl = self.vblank_start_scanline();
+            if !self.in_vblank && !self.frame_trigger && vbl > 0 && self.scanline == vbl - 1 {
+                self.frame_trigger = true;
+            }
+
+            if self.scanline == vbl {
+                self.in_vblank = true;
+                self.raise_status(VDC_STATUS_VBL);
+                self.refresh_activity_flags();
+                irq_recalc = true;
+                if self.handle_vblank_start() {
+                    irq_recalc = true;
+                }
+            }
+
             let rcr_target = self.registers[0x06] & 0x03FF;
             if let Some(rcr_scanline) = self.rcr_scanline_for_target(rcr_target) {
                 if self.scanline == rcr_scanline {
@@ -606,26 +627,7 @@ impl Vdc {
                 }
             }
 
-            // Trigger frame render at the LAST active scanline (one before
-            // VBlank).  Games like Power League III write sprite pattern data
-            // to VRAM during active display; rendering at VBlank start would
-            // miss those writes.  By deferring the trigger to the end of
-            // active display, the batch renderer captures all mid-frame VRAM
-            // updates while per-line scroll/control state is still intact.
-            let vbl = self.vblank_start_scanline();
-            if !self.in_vblank && !self.frame_trigger && vbl > 0 && self.scanline == vbl - 1 {
-                self.frame_trigger = true;
-                break;
-            }
-
-            if self.scanline == vbl {
-                self.in_vblank = true;
-                self.raise_status(VDC_STATUS_VBL);
-                self.refresh_activity_flags();
-                irq_recalc = true;
-                if self.handle_vblank_start() {
-                    irq_recalc = true;
-                }
+            if self.frame_trigger || self.scanline == vbl {
                 break;
             }
         }

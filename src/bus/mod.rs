@@ -33,6 +33,7 @@ const BRAM_SIZE: usize = 0x0800;
 const BRAM_LOCK_PORT: usize = 0x1803;
 const BRAM_UNLOCK_PORT: usize = 0x1807;
 const MASTER_CLOCK_HZ: u32 = 7_159_090;
+const PSG_CLOCK_HZ: u32 = MASTER_CLOCK_HZ / 2;
 const AUDIO_SAMPLE_RATE: u32 = 44_100;
 
 mod env;
@@ -42,12 +43,23 @@ mod mapping;
 mod render;
 mod types;
 
-#[cfg(debug_assertions)]
 use self::types::TransientU64;
 use self::types::{
     BankMapping, ControlRegister, IoPort, Timer, TransientBool, TransientBram, VdcPort,
 };
 use font::FONT;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AudioDiagnostics {
+    pub master_clock_hz: u32,
+    pub sample_rate_hz: u32,
+    pub total_phi_cycles: u64,
+    pub generated_samples: u64,
+    pub drained_samples: u64,
+    pub drain_calls: u64,
+    pub pending_bus_samples: usize,
+    pub phi_remainder: u64,
+}
 
 /// Memory bus exposing an 8x8 KiB banked window into linear RAM/ROM data.
 /// This mirrors the HuC6280 page architecture and provides simple helpers
@@ -68,12 +80,18 @@ pub struct Bus {
     psg: Psg,
     vce: Vce,
     audio_phi_accumulator: u64,
+    audio_psg_accumulator: TransientU64,
     audio_buffer: Vec<i16>,
+    audio_total_phi_cycles: TransientU64,
+    audio_total_generated_samples: TransientU64,
+    audio_total_drained_samples: TransientU64,
+    audio_total_drain_calls: TransientU64,
     framebuffer: Vec<u32>,
     frame_ready: bool,
     cart_ram: Vec<u8>,
     bram: TransientBram,
     bram_unlocked: TransientBool,
+    video_output_enabled: TransientBool,
     current_display_width: usize,
     current_display_height: usize,
     current_display_y_offset: usize,
@@ -113,12 +131,18 @@ impl Bus {
             psg: Psg::new(),
             vce: Vce::new(),
             audio_phi_accumulator: 0,
+            audio_psg_accumulator: TransientU64(0),
             audio_buffer: Vec::new(),
+            audio_total_phi_cycles: TransientU64(0),
+            audio_total_generated_samples: TransientU64(0),
+            audio_total_drained_samples: TransientU64(0),
+            audio_total_drain_calls: TransientU64(0),
             framebuffer: vec![0; FRAME_WIDTH * FRAME_HEIGHT],
             frame_ready: false,
             cart_ram: Vec::new(),
             bram: TransientBram::default(),
             bram_unlocked: TransientBool(false),
+            video_output_enabled: TransientBool(true),
             current_display_width: 256,
             current_display_height: 224,
             current_display_y_offset: 0,
@@ -387,11 +411,14 @@ impl Bus {
         self.psg.reset();
         self.vce.reset();
         self.audio_phi_accumulator = 0;
+        self.audio_psg_accumulator = TransientU64(0);
         self.audio_buffer.clear();
+        self.reset_audio_diagnostics();
         self.framebuffer.fill(0);
         self.frame_ready = false;
         self.cart_ram.fill(0);
         self.bram_unlocked = TransientBool(false);
+        self.video_output_enabled = TransientBool(true);
         self.bg_opaque.fill(false);
         self.bg_priority.fill(false);
         self.sprite_line_counts.fill(0);
@@ -671,6 +698,14 @@ impl Bus {
         value
     }
 
+    pub fn set_video_output_enabled(&mut self, enabled: bool) {
+        self.video_output_enabled = TransientBool(enabled);
+        if !enabled {
+            self.frame_ready = false;
+            self.vdc.clear_frame_trigger();
+        }
+    }
+
     pub fn write_io(&mut self, offset: usize, value: u8) {
         self.write_io_internal(offset, value);
         self.refresh_vdc_irq();
@@ -699,7 +734,12 @@ impl Bus {
         }
 
         if self.vdc.frame_ready() {
-            self.render_frame_from_vram();
+            if !*self.video_output_enabled {
+                self.vdc.clear_frame_trigger();
+                self.frame_ready = false;
+            } else {
+                self.render_frame_from_vram();
+            }
         }
 
         if self.timer.tick(cycles, high_speed) {
@@ -723,6 +763,7 @@ impl Bus {
     }
 
     pub fn psg_sample(&mut self) -> i16 {
+        self.advance_psg_for_host_sample();
         self.psg.generate_sample()
     }
 
@@ -782,7 +823,33 @@ impl Bus {
         (self.interrupt_disable, self.interrupt_request)
     }
 
+    pub fn audio_diagnostics(&self) -> AudioDiagnostics {
+        AudioDiagnostics {
+            master_clock_hz: MASTER_CLOCK_HZ,
+            sample_rate_hz: AUDIO_SAMPLE_RATE,
+            total_phi_cycles: *self.audio_total_phi_cycles,
+            generated_samples: *self.audio_total_generated_samples,
+            drained_samples: *self.audio_total_drained_samples,
+            drain_calls: *self.audio_total_drain_calls,
+            pending_bus_samples: self.audio_buffer.len(),
+            phi_remainder: self.audio_phi_accumulator,
+        }
+    }
+
+    pub fn reset_audio_diagnostics(&mut self) {
+        self.audio_total_phi_cycles = TransientU64(0);
+        self.audio_total_generated_samples = TransientU64(0);
+        self.audio_total_drained_samples = TransientU64(0);
+        self.audio_total_drain_calls = TransientU64(0);
+    }
+
     pub fn take_audio_samples(&mut self) -> Vec<i16> {
+        let drained = self.audio_buffer.len() as u64;
+        if drained != 0 {
+            self.audio_total_drained_samples.0 =
+                self.audio_total_drained_samples.0.saturating_add(drained);
+            self.audio_total_drain_calls.0 = self.audio_total_drain_calls.0.saturating_add(1);
+        }
         std::mem::take(&mut self.audio_buffer)
     }
 
@@ -1146,14 +1213,31 @@ impl Bus {
     }
 
     fn enqueue_audio_samples(&mut self, phi_cycles: u32) {
+        self.audio_total_phi_cycles.0 = self
+            .audio_total_phi_cycles
+            .0
+            .saturating_add(phi_cycles as u64);
         self.audio_phi_accumulator = self
             .audio_phi_accumulator
             .saturating_add(phi_cycles as u64 * AUDIO_SAMPLE_RATE as u64);
         while self.audio_phi_accumulator >= MASTER_CLOCK_HZ as u64 {
             self.audio_phi_accumulator -= MASTER_CLOCK_HZ as u64;
+            self.advance_psg_for_host_sample();
             let sample = self.psg.generate_sample();
             self.audio_buffer.push(sample);
+            self.audio_total_generated_samples.0 =
+                self.audio_total_generated_samples.0.saturating_add(1);
         }
+    }
+
+    fn advance_psg_for_host_sample(&mut self) {
+        self.audio_psg_accumulator.0 = self
+            .audio_psg_accumulator
+            .0
+            .saturating_add(PSG_CLOCK_HZ as u64);
+        let psg_cycles = (self.audio_psg_accumulator.0 / AUDIO_SAMPLE_RATE as u64) as u32;
+        self.audio_psg_accumulator.0 %= AUDIO_SAMPLE_RATE as u64;
+        self.psg.clock(psg_cycles);
     }
 
     pub fn irq_pending(&self) -> bool {

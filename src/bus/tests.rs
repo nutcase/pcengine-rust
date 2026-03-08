@@ -2480,6 +2480,70 @@ fn psg_sample_uses_waveform_ram() {
 }
 
 #[test]
+fn audio_diagnostics_track_generation_and_reset() {
+    let mut bus = Bus::new();
+
+    bus.write_io(0x1C60, PSG_REG_CH_SELECT as u8);
+    bus.write_io(0x1C61, 0x00);
+    bus.write_io(0x1C60, PSG_REG_MAIN_BALANCE as u8);
+    bus.write_io(0x1C61, 0xFF);
+    bus.write_io(0x1C60, PSG_REG_CH_BALANCE as u8);
+    bus.write_io(0x1C61, 0xFF);
+    bus.write_io(0x1C60, PSG_REG_CH_CONTROL as u8);
+    bus.write_io(0x1C61, PSG_CH_CTRL_KEY_ON | PSG_CH_CTRL_DDA | 0x1F);
+    bus.write_io(0x1C60, PSG_REG_WAVE_DATA as u8);
+    bus.write_io(0x1C61, 0x1F);
+
+    let initial = bus.audio_diagnostics();
+    assert_eq!(initial.total_phi_cycles, 0);
+    assert_eq!(initial.generated_samples, 0);
+    assert_eq!(initial.drained_samples, 0);
+    assert_eq!(initial.drain_calls, 0);
+    assert_eq!(initial.pending_bus_samples, 0);
+
+    bus.tick(MASTER_CLOCK_HZ, true);
+
+    let generated = bus.audio_diagnostics();
+    assert_eq!(generated.total_phi_cycles, MASTER_CLOCK_HZ as u64);
+    assert_eq!(generated.generated_samples, AUDIO_SAMPLE_RATE as u64);
+    assert_eq!(generated.drained_samples, 0);
+    assert_eq!(generated.drain_calls, 0);
+    assert_eq!(generated.pending_bus_samples, AUDIO_SAMPLE_RATE as usize);
+
+    let drained = bus.take_audio_samples();
+    assert_eq!(drained.len(), AUDIO_SAMPLE_RATE as usize);
+
+    let after_drain = bus.audio_diagnostics();
+    assert_eq!(after_drain.generated_samples, AUDIO_SAMPLE_RATE as u64);
+    assert_eq!(after_drain.drained_samples, AUDIO_SAMPLE_RATE as u64);
+    assert_eq!(after_drain.drain_calls, 1);
+    assert_eq!(after_drain.pending_bus_samples, 0);
+
+    bus.reset_audio_diagnostics();
+
+    let reset = bus.audio_diagnostics();
+    assert_eq!(reset.total_phi_cycles, 0);
+    assert_eq!(reset.generated_samples, 0);
+    assert_eq!(reset.drained_samples, 0);
+    assert_eq!(reset.drain_calls, 0);
+    assert_eq!(reset.pending_bus_samples, 0);
+}
+
+#[test]
+fn disabling_video_output_clears_pending_frame_trigger() {
+    let mut bus = Bus::new();
+    bus.vdc.frame_trigger = true;
+    bus.frame_ready = true;
+
+    bus.set_video_output_enabled(false);
+    bus.tick(0, true);
+
+    assert!(!bus.vdc.frame_ready());
+    assert!(!bus.frame_ready);
+    assert!(bus.take_frame().is_none());
+}
+
+#[test]
 fn psg_dda_mode_outputs_direct_level() {
     let mut bus = Bus::new();
 
@@ -2652,5 +2716,85 @@ fn psg_frequency_divider_uses_inverse_pitch_relation() {
     assert!(
         fast > slow.saturating_mul(8),
         "expected divider 0x001 to run much faster than 0xFFF (fast={fast}, slow={slow})"
+    );
+}
+
+#[test]
+fn psg_lfo_halt_stops_modulator_phase_advance() {
+    let mut bus = Bus::new();
+
+    bus.write_io(0x1C60, PSG_REG_CH_SELECT as u8);
+    bus.write_io(0x1C61, 0x01);
+    bus.write_io(0x1C60, PSG_REG_CH_CONTROL as u8);
+    bus.write_io(0x1C61, 0x00);
+    bus.write_io(0x1C60, PSG_REG_WAVE_DATA as u8);
+    for i in 0..PSG_WAVE_SIZE {
+        bus.write_io(0x1C61, if i & 0x01 == 0 { 0x00 } else { 0x1F });
+    }
+    bus.write_io(0x1C60, PSG_REG_FREQ_LO as u8);
+    bus.write_io(0x1C61, 0x01);
+    bus.write_io(0x1C60, PSG_REG_FREQ_HI as u8);
+    bus.write_io(0x1C61, 0x00);
+    bus.write_io(0x1C60, PSG_REG_CH_CONTROL as u8);
+    bus.write_io(0x1C61, PSG_CH_CTRL_KEY_ON | 0x1F);
+
+    bus.write_io(0x1C60, PSG_REG_LFO_FREQ as u8);
+    bus.write_io(0x1C61, 0x01);
+    bus.write_io(0x1C60, PSG_REG_LFO_CTRL as u8);
+    bus.write_io(0x1C61, 0x01);
+
+    for _ in 0..256 {
+        let _ = bus.psg_sample();
+    }
+    let running_pos = bus.psg.channels[1].wave_pos;
+    assert_ne!(running_pos, 0, "active LFO should advance channel 1");
+
+    bus.write_io(0x1C60, PSG_REG_LFO_CTRL as u8);
+    bus.write_io(0x1C61, 0x81);
+    let halted_pos = bus.psg.channels[1].wave_pos;
+    for _ in 0..256 {
+        let _ = bus.psg_sample();
+    }
+    assert_eq!(
+        bus.psg.channels[1].wave_pos, halted_pos,
+        "LFO halt bit should stop channel 1 phase advance"
+    );
+}
+
+#[test]
+fn psg_dc_blocker_keeps_centered_wave_mean_near_zero() {
+    let mut bus = Bus::new();
+
+    bus.write_io(0x1C60, PSG_REG_CH_SELECT as u8);
+    bus.write_io(0x1C61, 0x00);
+    bus.write_io(0x1C60, PSG_REG_MAIN_BALANCE as u8);
+    bus.write_io(0x1C61, 0xFF);
+    bus.write_io(0x1C60, PSG_REG_CH_BALANCE as u8);
+    bus.write_io(0x1C61, 0xFF);
+    bus.write_io(0x1C60, PSG_REG_CH_CONTROL as u8);
+    bus.write_io(0x1C61, 0x00);
+    bus.write_io(0x1C60, PSG_REG_WAVE_DATA as u8);
+    for i in 0..PSG_WAVE_SIZE {
+        bus.write_io(0x1C61, if i & 0x01 == 0 { 0x00 } else { 0x1F });
+    }
+    bus.write_io(0x1C60, PSG_REG_FREQ_LO as u8);
+    bus.write_io(0x1C61, 0x10);
+    bus.write_io(0x1C60, PSG_REG_FREQ_HI as u8);
+    bus.write_io(0x1C61, 0x00);
+    bus.write_io(0x1C60, PSG_REG_CH_CONTROL as u8);
+    bus.write_io(0x1C61, PSG_CH_CTRL_KEY_ON | 0x1F);
+
+    for _ in 0..1024 {
+        let _ = bus.psg_sample();
+    }
+
+    let mut sum = 0i64;
+    for _ in 0..4096 {
+        sum += i64::from(bus.psg_sample());
+    }
+    let mean = sum / 4096;
+    assert!(
+        mean.abs() < 64,
+        "DC blocker should keep centered waveform mean near zero (mean={mean})"
     );
 }
