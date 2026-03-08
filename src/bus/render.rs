@@ -19,7 +19,6 @@ impl Bus {
         let mut active_window_line = [false; FRAME_HEIGHT];
         let mut line_display_starts = [0usize; FRAME_HEIGHT];
         let mut line_display_widths = [0usize; FRAME_HEIGHT];
-        let mut line_display_end_margins = [0usize; FRAME_HEIGHT];
         let mut frame_x_offset = FRAME_WIDTH;
         let mut frame_x_end = 0usize;
         for y in 0..FRAME_HEIGHT {
@@ -28,7 +27,6 @@ impl Bus {
                 .vdc
                 .display_start_for_line(line_idx)
                 .min(FRAME_WIDTH - 1);
-            let line_end_margin = self.vdc.display_end_margin_for_line(line_idx);
             let line_width = self
                 .vdc
                 .display_width_for_line(line_idx)
@@ -36,15 +34,9 @@ impl Bus {
                 .min(FRAME_WIDTH.saturating_sub(line_start));
             line_display_starts[y] = line_start;
             line_display_widths[y] = line_width;
-            line_display_end_margins[y] =
-                line_end_margin.min(FRAME_WIDTH.saturating_sub(line_start + line_width));
             if y >= y_offset && y < y_offset.saturating_add(display_height) {
                 frame_x_offset = frame_x_offset.min(line_start);
-                frame_x_end = frame_x_end.max(
-                    line_start
-                        .saturating_add(line_width)
-                        .saturating_add(line_display_end_margins[y]),
-                );
+                frame_x_end = frame_x_end.max(line_start.saturating_add(line_width));
             }
             let in_active_window = self.vdc.output_row_in_active_window(y);
             active_window_line[y] = in_active_window;

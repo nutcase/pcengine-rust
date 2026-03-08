@@ -1137,7 +1137,7 @@ fn sprites_follow_horizontal_display_start_offset() {
 }
 
 #[test]
-fn take_frame_includes_right_border_when_latched_horizontal_end_increases() {
+fn take_frame_excludes_right_timing_margin_when_latched_horizontal_end_increases() {
     let mut bus = Bus::new();
     bus.set_mpr(0, 0xFF);
 
@@ -1165,10 +1165,8 @@ fn take_frame_includes_right_border_when_latched_horizontal_end_increases() {
     bus.render_frame_from_vram();
     let frame = bus.take_frame().expect("expected frame");
 
-    let overscan = bus.vce_palette_rgb(0x100);
-    assert_eq!(bus.display_width(), 272);
-    assert_eq!(frame[256], overscan);
-    assert_eq!(frame[bus.display_width() + 256], overscan);
+    assert_eq!(bus.display_width(), 256);
+    assert_eq!(frame.len(), 256 * bus.display_height());
 }
 
 #[test]

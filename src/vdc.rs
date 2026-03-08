@@ -1458,6 +1458,7 @@ impl Vdc {
         (hds * TILE_WIDTH).min(FRAME_WIDTH.saturating_sub(1))
     }
 
+    #[cfg(test)]
     pub(crate) fn display_end_margin_from_hdr(hdr: u16) -> usize {
         let hde = ((hdr >> 8) & 0x007F) as usize;
         (hde * TILE_WIDTH).min(FRAME_WIDTH)
@@ -1473,6 +1474,7 @@ impl Vdc {
         Self::display_start_from_hsr(hsr)
     }
 
+    #[cfg(test)]
     pub(crate) fn display_end_margin_for_line(&mut self, line: usize) -> usize {
         let (_, hdr) = self.horizontal_values_for_line(line);
         Self::display_end_margin_from_hdr(hdr)
